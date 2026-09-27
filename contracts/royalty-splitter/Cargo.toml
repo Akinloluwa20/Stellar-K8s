@@ -1,0 +1,32 @@
+[package]
+name = "royalty-splitter"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+license = "Apache-2.0"
+description = "Soroban contract that routes subscription payments to revenue stakeholders with dust-free, high-precision splits"
+repository = "https://github.com/stellar/stellar-k8s"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = "28.0.0"
+
+[dev-dependencies]
+soroban-sdk = { version = "28.0.0", features = ["testutils"] }
+
+# This contract is deliberately its own workspace so the operator's root
+# `cargo test --workspace` does not try to compile the Wasm contract crate.
+[workspace]
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true

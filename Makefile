@@ -1,4 +1,4 @@
-.PHONY: help build test fmt fmt-check lint clean docker-build install-crd apply-samples dev-setup ci-local benchmark benchmark-upgrade benchmark-webhook benchmark-webhook-health benchmark-webhook-compare benchmark-webhook-save benchmark-all benchmark-soroban-cache wasm-cache-build run-dev helm-lint crd-gen run-local compose-up compose-dev compose-down compose-logs quickstart
+.PHONY: help build test fmt fmt-check lint clean docker-build install-crd apply-samples dev-setup ci-local benchmark benchmark-upgrade benchmark-webhook benchmark-webhook-health benchmark-webhook-compare benchmark-webhook-save benchmark-all benchmark-soroban-cache wasm-cache-build contracts-test run-dev helm-lint crd-gen run-local compose-up compose-dev compose-down compose-logs quickstart
 
 # Default target
 .DEFAULT_GOAL := help
@@ -58,6 +58,10 @@ wasm-cache-build: ## Build the bounded Soroban cache Wasm artifact and enforce i
 
 benchmark-soroban-cache: ## Run the 10k-read Soroban cache benchmark against a running proxy
 	@node benchmarks/soroban-cache-load-test.js $(CACHE_PROXY_URL)
+
+contracts-test: ## Test the standalone Soroban contracts (e.g. royalty-splitter)
+	@echo "→ Testing royalty-splitter contract..."
+	@$(CARGO) test --manifest-path contracts/royalty-splitter/Cargo.toml
 
 docker-build: ## Fast local Docker build using host release binaries
 	@echo "→ Building Docker image (fast local mode)..."

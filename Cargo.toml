@@ -212,6 +212,9 @@ required-features = ["rest-api", "metrics"]
 
 [workspace]
 members = ["wasm-plugins"]
+# Soroban contracts are standalone workspaces (see contracts/*/Cargo.toml) so the
+# operator's `cargo test --workspace` never pulls in the wasm contract crates.
+exclude = ["contracts"]
 
 [profile.release.package.stellar-wasm-cache]
 opt-level = "z"
