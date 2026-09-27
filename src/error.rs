@@ -1,3 +1,15 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 //! Central error types for the Stellar-K8s operator
 //!
 //! Uses `thiserror` for ergonomic, type-safe error handling with
@@ -107,12 +119,41 @@ pub enum Error {
     /// An unexpected internal state error that doesn't fit other categories.
     #[error("[SK8S-022] Internal error: {0}")]
     InternalError(String),
+
+    /// The reconciler attempted a phase transition that the state machine in
+    /// [`crate::controller::phases`] does not permit. This always indicates a
+    /// bug in the reconcile pipeline rather than a bad user input.
+    #[error("[SK8S-023] Invalid reconcile phase transition: {0}")]
+    PhaseTransitionError(String),
 }
 
 /// Result type alias for operator operations
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// Format a user-facing diagnostic message with an explicit pipeline step.
+///
+/// Example: `diagnostic("load kubeconfig", "file not found at /etc/kube/config")`
+/// → `"[load kubeconfig] file not found at /etc/kube/config"`
+pub fn diagnostic(step: &str, detail: impl std::fmt::Display) -> String {
+    format!("[{step}] {detail}")
+}
+
 impl Error {
+    /// Build a configuration error that names the failing step.
+    pub fn config_step(step: &str, detail: impl std::fmt::Display) -> Self {
+        Error::ConfigError(diagnostic(step, detail))
+    }
+
+    /// Build an internal error that names the failing step.
+    pub fn internal_step(step: &str, detail: impl std::fmt::Display) -> Self {
+        Error::InternalError(diagnostic(step, detail))
+    }
+
+    /// Build a validation error that names the failing step.
+    pub fn validation_step(step: &str, detail: impl std::fmt::Display) -> Self {
+        Error::ValidationError(diagnostic(step, detail))
+    }
+
     /// Check if this error type should trigger a retry
     pub fn is_retriable(&self) -> bool {
         matches!(
@@ -121,39 +162,33 @@ impl Error {
         )
     }
 
-    /// Convert to a human-readable message for status updates
+    /// Convert to a human-readable message for status updates.
+    ///
+    /// Delegates to `Display` so there is a single source of truth for error formatting.
     pub fn status_message(&self) -> String {
+        self.to_string()
+    }
+
+    /// Map this error to the process exit code documented in
+    /// `docs/cli-commands-reference.md#exit-codes`.
+    ///
+    /// Rust's default `Termination` impl for `Result<(), Error>` always exits
+    /// with code 1 on `Err`, regardless of the error variant, so every CLI
+    /// command was silently ignoring the documented 2/3/4 exit codes unless it
+    /// special-cased `std::process::exit` itself. Routing every command's
+    /// error through this method instead keeps the exit code consistent with
+    /// the error category everywhere.
+    pub fn exit_code(&self) -> i32 {
         match self {
-            Error::KubeError(e) => format!("[SK8S-001] Kubernetes error: {e}"),
-            Error::SerializationError(e) => format!("[SK8S-002] Serialization error: {e}"),
-            Error::FinalizerError(msg) => format!("[SK8S-003] Finalizer error: {msg}"),
-            Error::ConfigError(msg) => format!("[SK8S-004] Configuration error: {msg}"),
-            Error::ValidationError(msg) => format!("[SK8S-005] Validation failed: {msg}"),
-            Error::NotFound {
-                kind,
-                name,
-                namespace,
-            } => format!("[SK8S-006] Resource not found: {kind}/{name} in namespace {namespace}"),
-            Error::InvalidNodeType(msg) => format!("[SK8S-007] Invalid node type: {msg}"),
-            Error::MissingRequiredField { field, node_type } => {
-                format!("[SK8S-008] Missing {field} for {node_type} node")
-            }
-            Error::ArchiveHealthCheckError(msg) => {
-                format!("[SK8S-009] Archive health check failed: {msg}")
-            }
-            Error::HttpError(e) => format!("[SK8S-010] HTTP request failed: {e}"),
-            Error::RemediationError(msg) => format!("[SK8S-011] Remediation failed: {msg}"),
-            Error::PluginError(msg) => format!("[SK8S-012] Plugin error: {msg}"),
-            Error::WebhookError(msg) => format!("[SK8S-013] Webhook error: {msg}"),
-            Error::NetworkError(msg) => format!("[SK8S-014] Network error: {msg}"),
-            Error::CertificateError(e) => format!("[SK8S-015] Certificate error: {e}"),
-            Error::IoError(e) => format!("[SK8S-016] I/O error: {e}"),
-            Error::MaintenanceError(msg) => format!("[SK8S-017] Database maintenance error: {msg}"),
-            Error::SqlxError(e) => format!("[SK8S-018] SQL error: {e}"),
-            Error::KubeconfigError(e) => format!("[SK8S-019] Kubeconfig error: {e}"),
-            Error::ZipError(e) => format!("[SK8S-020] Zip error: {e}"),
-            Error::NetworkSafetyViolation(v) => format!("[SK8S-021] Network safety violation: {v}"),
-            Error::InternalError(msg) => format!("[SK8S-022] Internal error: {msg}"),
+            Error::ValidationError(_)
+            | Error::InvalidNodeType(_)
+            | Error::MissingRequiredField { .. } => 2,
+            Error::KubeError(_)
+            | Error::KubeconfigError(_)
+            | Error::FinalizerError(_)
+            | Error::NotFound { .. } => 3,
+            Error::ConfigError(_) | Error::MaintenanceError(_) | Error::CertificateError(_) => 4,
+            _ => 1,
         }
     }
 }
@@ -168,6 +203,21 @@ impl From<kube::runtime::finalizer::Error<Error>> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_diagnostic_includes_step_and_detail() {
+        let msg = diagnostic("validate source", "path does not exist: /tmp/data");
+        assert_eq!(msg, "[validate source] path does not exist: /tmp/data");
+    }
+
+    #[test]
+    fn test_config_step_wraps_diagnostic() {
+        let err = Error::config_step("parse db uri", "missing database name");
+        assert_eq!(
+            err.to_string(),
+            "[SK8S-004] Configuration error: [parse db uri] missing database name"
+        );
+    }
 
     #[test]
     fn test_kube_error_conversion() {
@@ -208,13 +258,12 @@ mod tests {
 
     #[test]
     fn test_kube_error_status_message() {
-        // Test that KubeError status_message includes error code and description
+        // status_message delegates to Display, so the output must match to_string().
         let kube_serde_err =
             kube::Error::SerdeError(serde_json::from_str::<serde_json::Value>("bad").unwrap_err());
         let our_err = Error::KubeError(kube_serde_err);
-        let status = our_err.status_message();
-        assert!(status.contains("[SK8S-001]"));
-        assert!(status.contains("Kubernetes error"));
+        assert_eq!(our_err.status_message(), our_err.to_string());
+        assert!(our_err.status_message().contains("[SK8S-001]"));
     }
 
     #[test]
@@ -270,15 +319,13 @@ mod tests {
             "[SK8S-004] Configuration error: invalid config"
         );
 
+        // Since status_message() now delegates to Display, to_string() == status_message().
         let validation_err = Error::ValidationError("invalid".to_string());
         assert_eq!(
             validation_err.to_string(),
             "[SK8S-005] Node validation error: invalid"
         );
-        assert_eq!(
-            validation_err.status_message(),
-            "[SK8S-005] Validation failed: invalid"
-        );
+        assert_eq!(validation_err.status_message(), validation_err.to_string());
 
         let not_found_err = Error::NotFound {
             kind: "Pod".to_string(),
@@ -289,10 +336,7 @@ mod tests {
             not_found_err.to_string(),
             "[SK8S-006] Resource not found: Pod/test-pod in namespace default"
         );
-        assert_eq!(
-            not_found_err.status_message(),
-            "[SK8S-006] Resource not found: Pod/test-pod in namespace default"
-        );
+        assert_eq!(not_found_err.status_message(), not_found_err.to_string());
 
         let invalid_node_err = Error::InvalidNodeType("bad_type".to_string());
         assert_eq!(
@@ -301,7 +345,7 @@ mod tests {
         );
         assert_eq!(
             invalid_node_err.status_message(),
-            "[SK8S-007] Invalid node type: bad_type"
+            invalid_node_err.to_string()
         );
 
         let missing_field_err = Error::MissingRequiredField {
@@ -314,7 +358,7 @@ mod tests {
         );
         assert_eq!(
             missing_field_err.status_message(),
-            "[SK8S-008] Missing image for core node"
+            missing_field_err.to_string()
         );
 
         let archive_health_err = Error::ArchiveHealthCheckError("unreachable".to_string());
@@ -324,7 +368,7 @@ mod tests {
         );
         assert_eq!(
             archive_health_err.status_message(),
-            "[SK8S-009] Archive health check failed: unreachable"
+            archive_health_err.to_string()
         );
 
         let remediation_err = Error::RemediationError("failed to restart".to_string());
@@ -334,39 +378,27 @@ mod tests {
         );
         assert_eq!(
             remediation_err.status_message(),
-            "[SK8S-011] Remediation failed: failed to restart"
+            remediation_err.to_string()
         );
 
         let plugin_err = Error::PluginError("crash".to_string());
         assert_eq!(plugin_err.to_string(), "[SK8S-012] Plugin error: crash");
-        assert_eq!(
-            plugin_err.status_message(),
-            "[SK8S-012] Plugin error: crash"
-        );
+        assert_eq!(plugin_err.status_message(), plugin_err.to_string());
 
         let webhook_err = Error::WebhookError("timeout".to_string());
         assert_eq!(webhook_err.to_string(), "[SK8S-013] Webhook error: timeout");
-        assert_eq!(
-            webhook_err.status_message(),
-            "[SK8S-013] Webhook error: timeout"
-        );
+        assert_eq!(webhook_err.status_message(), webhook_err.to_string());
 
         let network_err = Error::NetworkError("offline".to_string());
         assert_eq!(network_err.to_string(), "[SK8S-014] Network error: offline");
-        assert_eq!(
-            network_err.status_message(),
-            "[SK8S-014] Network error: offline"
-        );
+        assert_eq!(network_err.status_message(), network_err.to_string());
 
         let io_err = Error::IoError(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "file not found",
         ));
         assert_eq!(io_err.to_string(), "[SK8S-016] I/O error: file not found");
-        assert_eq!(
-            io_err.status_message(),
-            "[SK8S-016] I/O error: file not found"
-        );
+        assert_eq!(io_err.status_message(), io_err.to_string());
 
         let maintenance_err = Error::MaintenanceError("db locked".to_string());
         assert_eq!(
@@ -375,7 +407,7 @@ mod tests {
         );
         assert_eq!(
             maintenance_err.status_message(),
-            "[SK8S-017] Database maintenance error: db locked"
+            maintenance_err.to_string()
         );
     }
 }

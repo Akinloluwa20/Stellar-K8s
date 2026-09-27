@@ -45,6 +45,15 @@ data:
         tls:
           insecure: true
       {{- end }}
+      {{- if .Values.otel.collector.config.loki.enabled }}
+      loki:
+        endpoint: {{ .Values.otel.collector.config.loki.endpoint | quote }}
+      {{- end }}
+      {{- if .Values.otel.collector.config.elasticsearch.enabled }}
+      elasticsearch:
+        endpoints: [{{ .Values.otel.collector.config.elasticsearch.endpoint | quote }}]
+        index: {{ .Values.otel.collector.config.elasticsearch.index | quote }}
+      {{- end }}
       # Always include a debug exporter so the collector starts even with no
       # backend configured (useful for local development).
       debug:
@@ -66,6 +75,17 @@ data:
             {{- if .Values.otel.collector.config.tempo.enabled }}
             - otlp/tempo
             {{- end }}
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters:
+            - debug
+            {{- if .Values.otel.collector.config.loki.enabled }}
+            - loki
+            {{- end }}
+            {{- if .Values.otel.collector.config.elasticsearch.enabled }}
+            - elasticsearch
+            {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -86,9 +106,12 @@ spec:
         {{- include "stellar-operator.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: otel-collector
     spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       volumes:
         - name: config
           configMap:
@@ -124,10 +147,7 @@ spec:
           resources:
             {{- toYaml .Values.otel.collector.resources | nindent 12 }}
           securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: [ALL]
+            {{- toYaml .Values.securityContext | nindent 12 }}
           livenessProbe:
             httpGet:
               path: /

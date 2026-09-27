@@ -581,6 +581,65 @@ Fields marked *(required)* must be present in every `StellarNode` manifest.
 | **Description** | Maintenance window start time (24h format, e.g., "02:00") Maintenance will only trigger during this window |
 | **Required** | *(required)* |
 
+### `spec.diagnosticSidecarResources`
+
+| | |
+|---|---|
+| **Path** | `spec.diagnosticSidecarResources` |
+| **Type** | `object` |
+| **Description** | Resource requests and limits for the operator-managed diagnostic health-check sidecar. Defaults to 50m CPU and 64Mi memory for both requests and limits when unset. |
+| **Nullable** | `true` |
+
+#### `spec.diagnosticSidecarResources.limits`
+
+| | |
+|---|---|
+| **Path** | `spec.diagnosticSidecarResources.limits` |
+| **Type** | `object` |
+| **Description** | Resource specification for CPU and memory |
+| **Required** | *(required)* |
+
+##### `spec.diagnosticSidecarResources.limits.cpu`
+
+| | |
+|---|---|
+| **Path** | `spec.diagnosticSidecarResources.limits.cpu` |
+| **Type** | `string` |
+| **Required** | *(required)* |
+
+##### `spec.diagnosticSidecarResources.limits.memory`
+
+| | |
+|---|---|
+| **Path** | `spec.diagnosticSidecarResources.limits.memory` |
+| **Type** | `string` |
+| **Required** | *(required)* |
+
+#### `spec.diagnosticSidecarResources.requests`
+
+| | |
+|---|---|
+| **Path** | `spec.diagnosticSidecarResources.requests` |
+| **Type** | `object` |
+| **Description** | Resource specification for CPU and memory |
+| **Required** | *(required)* |
+
+##### `spec.diagnosticSidecarResources.requests.cpu`
+
+| | |
+|---|---|
+| **Path** | `spec.diagnosticSidecarResources.requests.cpu` |
+| **Type** | `string` |
+| **Required** | *(required)* |
+
+##### `spec.diagnosticSidecarResources.requests.memory`
+
+| | |
+|---|---|
+| **Path** | `spec.diagnosticSidecarResources.requests.memory` |
+| **Type** | `string` |
+| **Required** | *(required)* |
+
 ### `spec.drConfig`
 
 | | |
@@ -1041,6 +1100,18 @@ Fields marked *(required)* must be present in every `StellarNode` manifest.
 | **Type** | `string` |
 | **Nullable** | `true` |
 
+### `spec.initContainers`
+
+| | |
+|---|---|
+| **Path** | `spec.initContainers` |
+| **Type** | `array` of `object` |
+| **Description** | Optional init containers to run before the main Stellar container starts.
+These run to completion in order before the main container starts.
+Useful for tasks like fetching custom configuration, restoring state,
+or pre-populating volumes. |
+| **Nullable** | `true` |
+
 ### `spec.loadBalancer`
 
 | | |
@@ -1480,7 +1551,7 @@ Fields marked *(required)* must be present in every `StellarNode` manifest.
 |---|---|
 | **Path** | `spec.networkPolicy.enabled` |
 | **Type** | `boolean` |
-| **Default** | `False` |
+| **Default** | `True` |
 
 #### `spec.networkPolicy.metricsNamespace`
 

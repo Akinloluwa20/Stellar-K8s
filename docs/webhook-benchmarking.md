@@ -231,10 +231,10 @@ For a cluster with 1000 nodes and 10 updates/minute per node:
 
 ### Automatic Benchmarking
 
-The webhook benchmark workflow (`.github/workflows/webhook-benchmark.yml`) automatically runs on:
+The webhook suite in the unified performance workflow
+(`.github/workflows/performance.yml`) automatically runs on:
 
-- Pull requests modifying webhook code
-- Pushes to main branch
+- Pushes to `main` (path-filtered)
 - Manual workflow dispatch
 
 ### PR Comments

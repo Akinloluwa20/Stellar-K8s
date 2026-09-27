@@ -58,25 +58,77 @@ tests:
           path: spec.template.metadata.annotations["prometheus.io/port"]
           value: "9090"
 
-  - it: renders rest-api args when enabled
+  - it: renders run subcommand and REST_API_PORT when enabled
     set:
       operator.restApiEnabled: true
       operator.restApiPort: 9090
     asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args[0]
+          value: run
       - contains:
-          path: spec.template.spec.containers[0].args
-          content: --enable-rest-api
-      - contains:
-          path: spec.template.spec.containers[0].args
-          content: --rest-api-port=9090
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REST_API_PORT
+            value: "9090"
 
-  - it: omits rest-api args when disabled
+  - it: omits REST_API_PORT when rest api disabled
     set:
       operator.restApiEnabled: false
     asserts:
       - notContains:
-          path: spec.template.spec.containers[0].args
-          content: --enable-rest-api
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REST_API_PORT
+            value: "8080"
+      - equal:
+          path: spec.template.spec.containers[0].args[0]
+          value: run
+
+  - it: omits profiling env when profiling disabled
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REST_API_PROFILING_ENABLED
+            value: "true"
+      - notContains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: profiling-tmp
+            mountPath: /tmp
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+
+  - it: sets profiling env when operator.profiling.enabled
+    set:
+      operator.restApiEnabled: true
+      operator.profiling.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REST_API_PROFILING_ENABLED
+            value: "true"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MALLOC_CONF
+            value: "prof:true,prof_active:true,lg_prof_sample:19"
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: profiling-tmp
+            emptyDir: {}
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: profiling-tmp
+            mountPath: /tmp
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
 
   - it: exposes http and metrics ports
     asserts:
@@ -84,7 +136,7 @@ tests:
           path: spec.template.spec.containers[0].ports
           content:
             name: http
-            containerPort: 9090
+            containerPort: 8080
             protocol: TCP
       - contains:
           path: spec.template.spec.containers[0].ports
@@ -181,3 +233,41 @@ tests:
           path: spec.template.spec.imagePullSecrets
           content:
             name: my-registry-secret
+
+  - it: applies extraAnnotations to deployment metadata
+    set:
+      extraAnnotations:
+        custom.io/env: production
+        custom.io/team: platform
+    asserts:
+      - equal:
+          path: metadata.annotations["custom.io/env"]
+          value: production
+      - equal:
+          path: metadata.annotations["custom.io/team"]
+          value: platform
+
+  - it: applies extraAnnotations to pod spec template metadata
+    set:
+      extraAnnotations:
+        custom.io/env: production
+        custom.io/team: platform
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations["custom.io/env"]
+          value: production
+      - equal:
+          path: spec.template.metadata.annotations["custom.io/team"]
+          value: platform
+
+  - it: merges podAnnotations and extraAnnotations in pod spec
+    set:
+      extraAnnotations:
+        custom.io/env: production
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations["prometheus.io/scrape"]
+          value: "true"
+      - equal:
+          path: spec.template.metadata.annotations["custom.io/env"]
+          value: production

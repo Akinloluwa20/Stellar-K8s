@@ -1,3 +1,15 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 use comfy_table::Table;
 use csv::WriterBuilder;
 use k8s_openapi::api::core::v1::{Pod, Secret};
@@ -192,12 +204,15 @@ impl SqlExecutor {
         // postgresql://user:pass@host:5432/db
         let parts: Vec<&str> = uri.split('@').collect();
         if parts.len() != 2 {
-            return Err(Error::ConfigError("Invalid DB URI format".to_string()));
+            return Err(Error::config_step(
+                "parse db uri",
+                "expected host/database path after '@'",
+            ));
         }
 
         let host_part = parts[1];
         let slash_index = host_part.find('/').ok_or_else(|| {
-            Error::ConfigError("Invalid DB URI format (missing / after host)".to_string())
+            Error::config_step("parse db uri", "missing database path after host")
         })?;
 
         let _host_and_port = &host_part[..slash_index];

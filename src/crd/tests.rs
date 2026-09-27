@@ -1122,6 +1122,7 @@ mod stellar_node_spec_validation {
                 ewma_alpha: 0.3,
                 ..Default::default()
             }),
+            queue_autoscaling: None,
         });
 
         let result = spec.validate();
@@ -1157,6 +1158,7 @@ mod stellar_node_spec_validation {
                 ewma_alpha: 0.0,
                 ..Default::default()
             }),
+            queue_autoscaling: None,
         });
 
         let result = spec.validate();
@@ -1192,6 +1194,7 @@ mod stellar_node_spec_validation {
                 ewma_alpha: 1.0,
                 ..Default::default()
             }),
+            queue_autoscaling: None,
         });
 
         let result = spec.validate();
@@ -1227,6 +1230,7 @@ mod stellar_node_spec_validation {
                 ewma_alpha: 0.3,
                 ..Default::default()
             }),
+            queue_autoscaling: None,
         });
 
         assert!(spec.validate().is_ok());
@@ -1254,6 +1258,7 @@ mod stellar_node_spec_validation {
                 ewma_alpha: 0.3,
                 ..Default::default()
             }),
+            queue_autoscaling: None,
         });
 
         let result = spec.validate();
@@ -1290,6 +1295,7 @@ mod stellar_node_spec_validation {
                 ewma_alpha: 0.3,
                 ..Default::default()
             }),
+            queue_autoscaling: None,
         });
 
         let result = spec.validate();
@@ -1325,6 +1331,7 @@ mod stellar_node_spec_validation {
                 ewma_alpha: 0.3,
                 ..Default::default()
             }),
+            queue_autoscaling: None,
         });
 
         assert!(spec.validate().is_ok());

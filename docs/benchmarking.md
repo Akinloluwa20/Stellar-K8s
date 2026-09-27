@@ -7,9 +7,84 @@ This document describes the automated performance benchmarking suite for the Ste
 The benchmarking suite consists of:
 
 - **k6 Load Tests**: Comprehensive load testing scripts measuring API endpoints, CRD operations, and reconciliation loops
-- **Baseline Management**: Version-taggeds performance baselines for regression comparison
-- **Regression Detection**: Automated comparison tool that fails builds when performance degrades
+- **Criterion CRD Benchmarks**: Rust-native micro-benchmarks for CRD create/update/delete operations with concurrent load testing
+- **Baseline Management**: Version-tagged performance baselines for regression comparison
+- **Regression Detection**: Automated comparison tool that fails builds when performance degrades by >10%
 - **CI/CD Integration**: GitHub Actions workflow for automated benchmarking on every PR and release
+
+## CRD Operation Benchmarks (Issue #1287)
+
+Criterion-based benchmarks for CRD create, update, and delete operations:
+
+```bash
+# Build benchmarks (compile check)
+make crd-benchmark
+
+# Run full CRD benchmarks
+cargo bench --bench crd_operations
+
+# Run specific benchmark groups
+cargo bench --bench crd_operations -- crd_create
+cargo bench --bench crd_operations -- crd_update
+cargo bench --bench crd_operations -- crd_delete
+cargo bench --bench crd_operations -- crd_concurrent
+```
+
+### Benchmark Groups
+
+| Group | Description |
+|-------|-------------|
+| `crd_create` | Create latency for minimal, standard, autoscaling, and full-config StellarNodes |
+| `crd_update` | Update latency for replica scaling and label changes |
+| `crd_delete` | Single and batch namespace deletion |
+| `crd_concurrent` | Concurrent operations at 1, 5, 10, 25, and 50 workers |
+
+### Regression Detection
+
+```bash
+# Check current results against baseline
+python3 scripts/check-crd-performance.py \
+    --current results/crd-benchmark.json \
+    --baseline benchmarks/baselines/crd-performance-v0.1.0.json \
+    --threshold 10
+```
+
+**Regression policy**: FAIL/ALERT when any metric regresses by more than 10%.
+
+### Baseline Format
+
+Baselines are stored in `benchmarks/baselines/crd-performance-v0.1.0.json`:
+
+```json
+{
+  "version": "crd-v0.1.0",
+  "metrics": {
+    "crd_create_minimal_ms": 45.0,
+    "crd_create_standard_ms": 65.0,
+    ...
+  },
+  "thresholds": {
+    "regression_percent": 10
+  }
+}
+```
+
+### Updating Baselines
+
+After an intentional performance improvement:
+
+1. Run the benchmarks to generate new results
+2. Compare against the current baseline
+3. If results are consistently better, update the baseline:
+
+```bash
+python3 scripts/check-crd-performance.py \
+    --current results/crd-benchmark.json \
+    --baseline benchmarks/baselines/crd-performance-v0.1.0.json \
+    --output results/crd-regression-report.json
+```
+
+Then update `benchmarks/baselines/crd-performance-v0.1.0.json` with the new values.
 
 ## Quick Start
 
@@ -35,23 +110,23 @@ cargo run
 kubectl proxy --port=8001
 
 # Run benchmarks
-./benchmarks/scripts/run-benchmarks.sh
+./benchmarks/run-regression-test.sh
 ```
 
 ### Running with Custom Options
 
 ```bash
 # Compare against specific baseline version
-./benchmarks/scripts/run-benchmarks.sh --baseline v1.0.0
+./benchmarks/run-regression-test.sh --baseline v1.0.0
 
 # Use custom regression threshold (15% instead of 10%)
-./benchmarks/scripts/run-benchmarks.sh --threshold 15
+./benchmarks/run-regression-test.sh --threshold 15
 
 # Update baseline after successful run
-./benchmarks/scripts/run-benchmarks.sh --update-baseline
+./benchmarks/run-regression-test.sh --update-baseline
 
 # Verbose output
-./benchmarks/scripts/run-benchmarks.sh --verbose
+./benchmarks/run-regression-test.sh --verbose
 ```
 
 ## Benchmark Scenarios
@@ -160,25 +235,24 @@ The default regression threshold is **10%**. This means:
 
 ### GitHub Actions Workflow
 
-The `benchmark.yml` workflow runs automatically on:
-- Pull requests to `main`
-- Pushes to `main` and `develop`
-- Release tags (`v*`)
+The unified `performance.yml` workflow is the single supported benchmark entry
+point (it replaces the former `benchmark.yml`, `performance-regression.yml`, and
+`webhook-benchmark.yml` templates). It runs on:
+
+- Pushes to `main` (path-filtered)
+- Manual `workflow_dispatch`
 
 ### Workflow Jobs
 
-1. **Build**: Compile operator and build Docker image
-2. **Benchmark**: Run k6 tests in Kind cluster
-3. **Report**: Post results as PR comment
-4. **Update Baseline**: Create new baseline on release tags
+1. **resolve-matrix / build**: Compile operator and build Docker image once
+2. **benchmark** (matrix): operator, regression, and webhook suites
+3. **report**: Publish a combined summary artifact
 
 ### Manual Trigger
 
 ```bash
-# Trigger benchmark with custom baseline
-gh workflow run benchmark.yml \
-  -f baseline_version=v1.0.0 \
-  -f regression_threshold=15
+# Trigger the unified performance pipeline
+gh workflow run performance.yml
 ```
 
 ## Creating Baselines
@@ -303,7 +377,7 @@ export const options = {
 
 ```bash
 # Create initial baseline
-./benchmarks/scripts/run-benchmarks.sh --update-baseline
+./benchmarks/run-regression-test.sh --update-baseline
 ```
 
 ### "Connection refused to operator"

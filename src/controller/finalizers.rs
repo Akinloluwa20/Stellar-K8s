@@ -1,3 +1,15 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 //! Finalizer handling for StellarNode cleanup
 //!
 //! Finalizers ensure that when a StellarNode is deleted:
@@ -26,7 +38,6 @@ pub const STELLAR_NODE_FINALIZER: &str = "stellarnode.stellar.org/finalizer";
 /// Called during the Apply phase to ensure the finalizer is set.
 /// The kube-rs `finalizer` helper handles this automatically, but
 /// this function can be used for manual finalizer management.
-#[allow(dead_code)]
 pub async fn add_finalizer(client: &Client, node: &StellarNode) -> Result<()> {
     let namespace = node.namespace().unwrap_or_else(|| "default".to_string());
     let api: Api<StellarNode> = Api::namespaced(client.clone(), &namespace);
@@ -56,7 +67,6 @@ pub async fn add_finalizer(client: &Client, node: &StellarNode) -> Result<()> {
 ///
 /// Called after all resources have been cleaned up. Once the finalizer
 /// is removed, Kubernetes will complete the deletion of the StellarNode.
-#[allow(dead_code)]
 pub async fn remove_finalizer(client: &Client, node: &StellarNode) -> Result<()> {
     let namespace = node.namespace().unwrap_or_else(|| "default".to_string());
     let api: Api<StellarNode> = Api::namespaced(client.clone(), &namespace);
@@ -89,13 +99,11 @@ pub async fn remove_finalizer(client: &Client, node: &StellarNode) -> Result<()>
 ///
 /// A deletion timestamp indicates the user has requested deletion,
 /// but finalizers are preventing the actual removal.
-#[allow(dead_code)]
 pub fn is_being_deleted(node: &StellarNode) -> bool {
     node.metadata.deletion_timestamp.is_some()
 }
 
 /// Check if the node has our finalizer
-#[allow(dead_code)]
 pub fn has_finalizer(node: &StellarNode) -> bool {
     node.finalizers()
         .iter()

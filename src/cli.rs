@@ -1,12 +1,25 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 //! Command-line argument definitions for the Stellar-K8s operator.
 //!
 //! This module uses `clap` to define the CLI structure, including all
 //! subcommands, arguments, and environment variable mappings.
 
+use crate::commands::backup::{BackupArgs, CleanupArgs, ListArgs, RestoreArgs};
+use crate::controller::archive_prune::PruneArchiveArgs;
+use crate::controller::diff::DiffArgs;
+use crate::incident;
 use clap::{Parser, Subcommand};
-use stellar_k8s::controller::archive_prune::PruneArchiveArgs;
-use stellar_k8s::controller::diff::DiffArgs;
-use stellar_k8s::incident;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -35,6 +48,7 @@ stellar-operator run --namespace stellar-system --dry-run\n  \
 stellar-operator run --dump-config\n  \
 stellar-operator webhook --bind 0.0.0.0:8443 --cert-path /tls/tls.crt --key-path /tls/tls.key\n  \
 stellar-operator info --namespace stellar-system\n  \
+stellar-operator doctor\n  \
 stellar-operator check-crd\n  \
 stellar-operator version"
 )]
@@ -61,6 +75,10 @@ pub enum Commands {
     Info(InfoArgs),
     /// Verify StellarNode CRD installation and expected version
     CheckCrd,
+    /// Verify local CLI tooling, Kubernetes context, and operator permissions
+    Doctor(DoctorArgs),
+    /// Run offline repository validation checks
+    HealthCheck(crate::commands::health_check::HealthCheckArgs),
     /// Prune old history archive checkpoints
     PruneArchive(PruneArchiveArgs),
     /// Show difference between desired and live cluster state
@@ -75,10 +93,38 @@ pub enum Commands {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
-    /// Generate an incident report for a specific time window
-    IncidentReport(incident::IncidentReportArgs),
+    /// Install shell completion scripts to user's home directory
+    InstallCompletion {
+        /// Shell to install completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Incident Response Toolkit
+    Incident {
+        #[command(subcommand)]
+        command: incident::IncidentCommands,
+    },
     /// Compare performance metrics between two clusters
-    BenchmarkCompare(stellar_k8s::benchmark_compare::BenchmarkCompareArgs),
+    BenchmarkCompare(crate::benchmark_compare::BenchmarkCompareArgs),
+    /// Export operator audit log and config as a signed compliance report
+    ExportCompliance(ExportComplianceArgs),
+    /// Backup commands for Stellar node data
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum BackupCommands {
+    /// Create a backup of Stellar node data
+    Create(BackupArgs),
+    /// Restore a backup
+    Restore(RestoreArgs),
+    /// List available backups
+    List(ListArgs),
+    /// Cleanup old backups
+    Cleanup(CleanupArgs),
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -187,6 +233,17 @@ pub struct RunArgs {
     /// Run preflight checks and exit without starting the operator
     #[arg(long, env = "PREFLIGHT_ONLY")]
     pub preflight_only: bool,
+
+    /// Minimum log level emitted by the operator.
+    ///
+    /// Accepted values: trace, debug, info, warn, error.
+    /// Env: LOG_LEVEL
+    #[arg(long, env = "LOG_LEVEL", default_value = "info")]
+    pub log_level: String,
+
+    /// Log output format (json or pretty).
+    #[arg(long, env = "LOG_FORMAT", value_enum, default_value = "json")]
+    pub log_format: LogFormat,
 }
 
 impl RunArgs {
@@ -208,6 +265,17 @@ impl RunArgs {
 #[derive(Parser, Debug)]
 pub struct InfoArgs {
     /// Kubernetes namespace to query for StellarNode resources.
+    ///
+    /// Env: OPERATOR_NAMESPACE
+    ///
+    /// Example: --namespace stellar-system
+    #[arg(long, env = "OPERATOR_NAMESPACE", default_value = "default")]
+    pub namespace: String,
+}
+
+#[derive(Parser, Debug)]
+pub struct DoctorArgs {
+    /// Kubernetes namespace used by the operator for permission checks.
     ///
     /// Env: OPERATOR_NAMESPACE
     ///
@@ -374,6 +442,28 @@ pub struct BenchmarkArgs {
     pub log_level: String,
 }
 
+/// Arguments for the `export-compliance` subcommand.
+#[derive(Parser, Debug)]
+#[command(about = "Export operator audit log as a signed compliance report (JSON or PDF)")]
+pub struct ExportComplianceArgs {
+    /// Output format: json or pdf
+    #[arg(long, default_value = "json", value_parser = ["json", "pdf"])]
+    pub format: String,
+
+    /// Path to write the export file. Defaults to stdout for JSON, or
+    /// `compliance-report-<timestamp>.<ext>` for PDF.
+    #[arg(long)]
+    pub output: Option<String>,
+
+    /// Kubernetes namespace to read audit entries from (operator namespace).
+    #[arg(long, env = "OPERATOR_NAMESPACE", default_value = "default")]
+    pub namespace: String,
+
+    /// Maximum number of audit entries to include (0 = all).
+    #[arg(long, default_value = "0")]
+    pub limit: usize,
+}
+
 #[cfg(test)]
 mod cli_tests {
     use super::*;
@@ -538,6 +628,13 @@ mod cli_tests {
         assert!(matches!(parsed.command, Commands::CheckCrd));
     }
 
+    #[test]
+    fn doctor_subcommand_parses() {
+        let parsed = Args::try_parse_from(["stellar-operator", "doctor"])
+            .expect("doctor subcommand should parse");
+        assert!(matches!(parsed.command, Commands::Doctor(_)));
+    }
+
     fn parse_simulator_up(args: &[&str]) -> Result<SimulatorUpArgs, clap::Error> {
         let mut full: Vec<&str> = vec!["stellar-operator", "simulator", "up"];
         full.extend_from_slice(args);
@@ -582,3 +679,7 @@ mod cli_tests {
         assert!(parsed.offline);
     }
 }
+
+#[cfg(test)]
+#[path = "cli_tests.rs"]
+mod cli_tests_ext;

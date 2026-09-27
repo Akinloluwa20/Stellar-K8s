@@ -1,3 +1,15 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 //! Prometheus metrics for the Stellar-K8s operator
 //!
 //! # Exported metrics
@@ -11,7 +23,10 @@
 //! - `stellar_node_sync_status` (gauge): node sync status (0=Pending, 1=Creating, 2=Running, 3=Syncing, 4=Ready, 5=Failed, 6=Degraded, 7=Suspended).
 //! - `stellar_node_up` (gauge): binary indicator if node is up based on pod readiness (1=up, 0=down).
 //! - `stellar_horizon_tps` (gauge): Horizon TPS labeled by namespace/name/node_type/network/hardware_generation.
+//! - `stellar_horizon_queue_length` (gauge): pending Horizon request queue length labeled by namespace/name/node_type/network/hardware_generation.
 //! - `stellar_node_active_connections` (gauge): active peer connections labeled by namespace/name/node_type/network/hardware_generation.
+//! - `stellar_horizon_request_error_ratio` (gauge): ratio (0.0-1.0) of Horizon API requests returning 4xx/5xx, labeled by namespace/name/node_type/network/hardware_generation.
+//! - `stellar_horizon_db_query_duration_seconds` (gauge): average Horizon database query duration in seconds, labeled by namespace/name/node_type/network/hardware_generation.
 
 use std::sync::atomic::{AtomicI64, AtomicU64};
 
@@ -63,8 +78,24 @@ pub static INGESTION_LAG: Lazy<Family<NodeLabels, Gauge<i64, AtomicI64>>> =
 pub static HORIZON_TPS: Lazy<Family<NodeLabels, Gauge<i64, AtomicI64>>> =
     Lazy::new(Family::default);
 
+/// Gauge tracking pending Horizon request queue length
+pub static HORIZON_QUEUE_LENGTH: Lazy<Family<NodeLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
 /// Gauge tracking active connections per node
 pub static ACTIVE_CONNECTIONS: Lazy<Family<NodeLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Gauge tracking pending Soroban RPC requests per node.
+pub static PENDING_RPC_QUEUE: Lazy<Family<NodeLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Gauge tracking Horizon API request error ratio per node
+pub static HORIZON_REQUEST_ERROR_RATIO: Lazy<Family<NodeLabels, Gauge<f64, AtomicU64>>> =
+    Lazy::new(Family::default);
+
+/// Gauge tracking average Horizon database query duration in seconds per node
+pub static HORIZON_DB_QUERY_DURATION_SECONDS: Lazy<Family<NodeLabels, Gauge<f64, AtomicU64>>> =
     Lazy::new(Family::default);
 
 /// Gauge tracking archive integrity status (1 = healthy, 0 = corrupted)
@@ -115,6 +146,14 @@ pub static PVC_SIZE_BYTES: Lazy<Family<NodeLabels, Gauge<i64, AtomicI64>>> =
 
 /// Gauge tracking PVC expansion count
 pub static PVC_EXPANSION_COUNT: Lazy<Family<NodeLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Gauge tracking snapshot integrity check status (1 = pass, 0 = fail)
+pub static SNAPSHOT_INTEGRITY_STATUS: Lazy<Family<NodeLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Gauge tracking snapshot integrity check duration in milliseconds
+pub static SNAPSHOT_INTEGRITY_CHECK_DURATION_MS: Lazy<Family<NodeLabels, Gauge<i64, AtomicI64>>> =
     Lazy::new(Family::default);
 
 /// Histogram tracking consensus latency per validator
@@ -171,6 +210,15 @@ pub struct TransactionResultLabels {
     pub name: String,
     pub network: String,
     pub result: String, // "success" or "failed"
+}
+
+/// Labels for Horizon migration metrics
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct HorizonMigrationLabels {
+    pub namespace: String,
+    pub name: String,
+    pub network: String,
+    pub status: String, // "success" or "failed"
 }
 
 /// Histogram tracking reconcile duration (seconds)
@@ -245,6 +293,19 @@ pub static TRANSACTION_RESULT_TOTAL: Lazy<
     Family<TransactionResultLabels, Counter<u64, AtomicU64>>,
 > = Lazy::new(Family::default);
 
+/// Histogram tracking Horizon migration duration in seconds
+pub static HORIZON_MIGRATION_DURATION_SECONDS: Lazy<Family<HorizonMigrationLabels, Histogram>> =
+    Lazy::new(|| {
+        fn migration_histogram() -> Histogram {
+            Histogram::new(exponential_buckets(0.1, 2.0, 16))
+        }
+        Family::new_with_constructor(migration_histogram)
+    });
+
+/// Counter tracking Horizon migration results
+pub static HORIZON_MIGRATION_TOTAL: Lazy<Family<HorizonMigrationLabels, Counter<u64, AtomicU64>>> =
+    Lazy::new(Family::default);
+
 /// Counter tracking host function calls
 pub static HOST_FUNCTION_CALLS_TOTAL: Lazy<Family<SorobanLabels, Counter<u64, AtomicU64>>> =
     Lazy::new(Family::default);
@@ -272,6 +333,37 @@ pub static DR_DRILL_EXECUTIONS_TOTAL: Lazy<Family<DRDrillLabels, Counter<u64, At
 
 /// Gauge tracking Time to Recovery (TTR) in milliseconds
 pub static DR_DRILL_TIME_TO_RECOVERY_MS: Lazy<Family<DRDrillLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Labels for traffic shaping metrics.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct TrafficRequestLabels {
+    pub namespace: String,
+    pub name: String,
+    pub priority: String,
+    pub decision: String,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct TrafficNodeLabels {
+    pub namespace: String,
+    pub name: String,
+}
+
+/// Counter tracking traffic shaping decisions by priority and decision.
+pub static TRAFFIC_REQUESTS_TOTAL: Lazy<Family<TrafficRequestLabels, Counter<u64, AtomicU64>>> =
+    Lazy::new(Family::default);
+
+/// Gauge tracking effective adaptive rate limit (RPS).
+pub static TRAFFIC_EFFECTIVE_RPS: Lazy<Family<TrafficNodeLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Gauge tracking observed system load as percentage (0-100).
+pub static TRAFFIC_SYSTEM_LOAD_PERCENT: Lazy<Family<TrafficNodeLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Gauge tracking circuit breaker state (0=closed, 1=open, 2=half-open).
+pub static TRAFFIC_CIRCUIT_BREAKER_STATE: Lazy<Family<TrafficNodeLabels, Gauge<i64, AtomicI64>>> =
     Lazy::new(Family::default);
 
 /// Global metrics registry
@@ -318,9 +410,29 @@ pub static REGISTRY: Lazy<Registry> = Lazy::new(|| {
         HORIZON_TPS.clone(),
     );
     registry.register(
+        "stellar_horizon_queue_length",
+        "Pending Horizon request queue length",
+        HORIZON_QUEUE_LENGTH.clone(),
+    );
+    registry.register(
         "stellar_node_active_connections",
         "Number of active peer connections",
         ACTIVE_CONNECTIONS.clone(),
+    );
+    registry.register(
+        "stellar_node_pending_rpc_queue",
+        "Pending Soroban RPC request queue length",
+        PENDING_RPC_QUEUE.clone(),
+    );
+    registry.register(
+        "stellar_horizon_request_error_ratio",
+        "Ratio of Horizon API requests returning 4xx/5xx",
+        HORIZON_REQUEST_ERROR_RATIO.clone(),
+    );
+    registry.register(
+        "stellar_horizon_db_query_duration_seconds",
+        "Average Horizon database query duration in seconds",
+        HORIZON_DB_QUERY_DURATION_SECONDS.clone(),
     );
     registry.register(
         "stellar_archive_ledger_lag",
@@ -431,6 +543,17 @@ pub static REGISTRY: Lazy<Registry> = Lazy::new(|| {
         HOST_FUNCTION_CALLS_TOTAL.clone(),
     );
 
+    registry.register(
+        "stellar_horizon_migration_duration_seconds",
+        "Duration of Horizon database migrations in seconds",
+        HORIZON_MIGRATION_DURATION_SECONDS.clone(),
+    );
+    registry.register(
+        "stellar_horizon_migration_total",
+        "Total number of Horizon database migration executions",
+        HORIZON_MIGRATION_TOTAL.clone(),
+    );
+
     // Register DR drill metrics
     registry.register(
         "stellar_dr_drill_execution_time_ms",
@@ -470,6 +593,39 @@ pub static REGISTRY: Lazy<Registry> = Lazy::new(|| {
         PVC_EXPANSION_COUNT.clone(),
     );
 
+    // Register snapshot integrity metrics
+    registry.register(
+        "stellar_snapshot_integrity_status",
+        "Snapshot integrity check result (1 = pass, 0 = fail)",
+        SNAPSHOT_INTEGRITY_STATUS.clone(),
+    );
+    registry.register(
+        "stellar_snapshot_integrity_check_duration_ms",
+        "Duration of snapshot integrity check in milliseconds",
+        SNAPSHOT_INTEGRITY_CHECK_DURATION_MS.clone(),
+    );
+
+    registry.register(
+        "stellar_traffic_requests_total",
+        "Total traffic shaping decisions by priority and decision",
+        TRAFFIC_REQUESTS_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_traffic_effective_rps",
+        "Effective adaptive rate limit in requests per second",
+        TRAFFIC_EFFECTIVE_RPS.clone(),
+    );
+    registry.register(
+        "stellar_traffic_system_load_percent",
+        "Observed system load as a percentage",
+        TRAFFIC_SYSTEM_LOAD_PERCENT.clone(),
+    );
+    registry.register(
+        "stellar_traffic_circuit_breaker_state",
+        "Circuit breaker state (0=closed, 1=open, 2=half-open)",
+        TRAFFIC_CIRCUIT_BREAKER_STATE.clone(),
+    );
+
     // Register operator build-info and leader metrics
     registry.register(
         "stellar_operator_info",
@@ -491,6 +647,83 @@ pub static REGISTRY: Lazy<Registry> = Lazy::new(|| {
         "stellar_operator_ready",
         "1 if the operator is ready (K8s watch healthy and first reconcile complete), 0 otherwise",
         OPERATOR_READY_STATUS.clone(),
+    );
+
+    // ── Observability Pipeline metrics ────────────────────────────────────
+    registry.register(
+        "stellar_observability_pipeline_up",
+        "1 if the observability pipeline is running, 0 otherwise",
+        OBSERVABILITY_PIPELINE_UP.clone(),
+    );
+    registry.register(
+        "stellar_observability_events_ingested_total",
+        "Total number of observability events ingested by source",
+        OBSERVABILITY_EVENTS_INGESTED_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_observability_anomalies_total",
+        "Total number of anomalies detected by type",
+        OBSERVABILITY_ANOMALIES_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_observability_anomalies_active",
+        "Number of currently active (unresolved) anomalies",
+        OBSERVABILITY_ANOMALIES_ACTIVE.clone(),
+    );
+    registry.register(
+        "stellar_observability_alerts_total",
+        "Total number of intelligent alerts generated",
+        OBSERVABILITY_ALERTS_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_observability_alerts_active",
+        "Number of currently active (unresolved) alerts",
+        OBSERVABILITY_ALERTS_ACTIVE.clone(),
+    );
+    registry.register(
+        "stellar_observability_alerts_deduplicated_total",
+        "Total number of alerts suppressed by deduplication",
+        OBSERVABILITY_ALERTS_DEDUPLICATED_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_observability_alerts_resolved_total",
+        "Total number of alerts resolved",
+        OBSERVABILITY_ALERTS_RESOLVED_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_observability_correlations_total",
+        "Total number of event correlations found by type",
+        OBSERVABILITY_CORRELATIONS_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_observability_incidents_open",
+        "Number of currently open incidents",
+        OBSERVABILITY_INCIDENTS_OPEN.clone(),
+    );
+    registry.register(
+        "stellar_observability_incidents_resolved_total",
+        "Total number of incidents resolved",
+        OBSERVABILITY_INCIDENTS_RESOLVED_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_observability_incident_mttr_seconds",
+        "Mean time to resolve incidents in seconds",
+        OBSERVABILITY_INCIDENT_MTTR_SECONDS.clone(),
+    );
+    registry.register(
+        "stellar_observability_rca_confidence",
+        "Confidence score of the most recent root cause analysis (0.0–1.0)",
+        OBSERVABILITY_RCA_CONFIDENCE.clone(),
+    );
+    registry.register(
+        "stellar_observability_predictive_alerts_total",
+        "Total number of predictive alerts generated",
+        OBSERVABILITY_PREDICTIVE_ALERTS_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_observability_baseline_samples",
+        "Number of samples in the baseline for each metric",
+        OBSERVABILITY_BASELINE_SAMPLES.clone(),
     );
 
     registry
@@ -625,6 +858,48 @@ pub fn set_ingestion_lag_with_dp(
         hardware_generation: hardware_generation.to_string(),
     };
     INGESTION_LAG.get_or_create(&labels).set(val);
+}
+
+/// Record a traffic shaping decision.
+pub fn observe_traffic_request(namespace: &str, name: &str, priority: &str, decision: &str) {
+    let labels = TrafficRequestLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+        priority: priority.to_string(),
+        decision: decision.to_string(),
+    };
+    TRAFFIC_REQUESTS_TOTAL.get_or_create(&labels).inc();
+}
+
+/// Set effective adaptive traffic limit in RPS.
+pub fn set_traffic_effective_rps(namespace: &str, name: &str, value: i64) {
+    let labels = TrafficNodeLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+    };
+    TRAFFIC_EFFECTIVE_RPS.get_or_create(&labels).set(value);
+}
+
+/// Set observed system load percentage.
+pub fn set_traffic_system_load(namespace: &str, name: &str, value: i64) {
+    let labels = TrafficNodeLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+    };
+    TRAFFIC_SYSTEM_LOAD_PERCENT
+        .get_or_create(&labels)
+        .set(value);
+}
+
+/// Set current circuit breaker state.
+pub fn set_traffic_circuit_breaker_state(namespace: &str, name: &str, state: i64) {
+    let labels = TrafficNodeLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+    };
+    TRAFFIC_CIRCUIT_BREAKER_STATE
+        .get_or_create(&labels)
+        .set(state);
 }
 
 /// Node phase enumeration for metrics
@@ -806,6 +1081,27 @@ pub fn set_horizon_tps(
     HORIZON_TPS.get_or_create(&labels).set(tps);
 }
 
+/// Update the Horizon queue length metric for a node
+pub fn set_horizon_queue_length(
+    namespace: &str,
+    name: &str,
+    node_type: &str,
+    network: &str,
+    hardware_generation: &str,
+    queue_length: i64,
+) {
+    let labels = NodeLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+        node_type: node_type.to_string(),
+        network: network.to_string(),
+        hardware_generation: hardware_generation.to_string(),
+    };
+    HORIZON_QUEUE_LENGTH
+        .get_or_create(&labels)
+        .set(queue_length);
+}
+
 /// Update the active connections metric for a node
 pub fn set_active_connections(
     namespace: &str,
@@ -823,6 +1119,48 @@ pub fn set_active_connections(
         hardware_generation: hardware_generation.to_string(),
     };
     ACTIVE_CONNECTIONS.get_or_create(&labels).set(connections);
+}
+
+/// Update the Horizon API request error ratio (0.0-1.0) for a node
+pub fn set_horizon_request_error_ratio(
+    namespace: &str,
+    name: &str,
+    node_type: &str,
+    network: &str,
+    hardware_generation: &str,
+    error_ratio: f64,
+) {
+    let labels = NodeLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+        node_type: node_type.to_string(),
+        network: network.to_string(),
+        hardware_generation: hardware_generation.to_string(),
+    };
+    HORIZON_REQUEST_ERROR_RATIO
+        .get_or_create(&labels)
+        .set(error_ratio);
+}
+
+/// Update the average Horizon database query duration (seconds) for a node
+pub fn set_horizon_db_query_duration_seconds(
+    namespace: &str,
+    name: &str,
+    node_type: &str,
+    network: &str,
+    hardware_generation: &str,
+    duration_seconds: f64,
+) {
+    let labels = NodeLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+        node_type: node_type.to_string(),
+        network: network.to_string(),
+        hardware_generation: hardware_generation.to_string(),
+    };
+    HORIZON_DB_QUERY_DURATION_SECONDS
+        .get_or_create(&labels)
+        .set(duration_seconds);
 }
 
 fn generate_laplace_noise(epsilon: f64, sensitivity: f64) -> f64 {
@@ -952,6 +1290,36 @@ pub fn inc_transaction_result(namespace: &str, name: &str, network: &str, succes
         },
     };
     TRANSACTION_RESULT_TOTAL.get_or_create(&labels).inc();
+}
+
+/// Record Horizon migration duration in seconds.
+pub fn observe_horizon_migration_duration(
+    namespace: &str,
+    name: &str,
+    network: &str,
+    status: &str,
+    duration_secs: f64,
+) {
+    let labels = HorizonMigrationLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+        network: network.to_string(),
+        status: status.to_string(),
+    };
+    HORIZON_MIGRATION_DURATION_SECONDS
+        .get_or_create(&labels)
+        .observe(duration_secs);
+}
+
+/// Increment Horizon migration result counter.
+pub fn inc_horizon_migration_total(namespace: &str, name: &str, network: &str, status: &str) {
+    let labels = HorizonMigrationLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+        network: network.to_string(),
+        status: status.to_string(),
+    };
+    HORIZON_MIGRATION_TOTAL.get_or_create(&labels).inc();
 }
 
 /// Increment host function call counter
@@ -1101,6 +1469,176 @@ pub static OPERATOR_UPTIME_SECONDS: Lazy<Counter<u64, AtomicU64>> = Lazy::new(Co
 
 /// Gauge tracking whether the operator is ready (1 = ready, 0 = not ready).
 pub static OPERATOR_READY_STATUS: Lazy<Gauge<i64, AtomicI64>> = Lazy::new(Gauge::default);
+
+// ── Observability Pipeline Metrics ────────────────────────────────────────
+
+/// Labels for observability pipeline event source metrics
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct ObservabilitySourceLabels {
+    pub source: String,
+}
+
+/// Labels for observability anomaly metrics
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct ObservabilityAnomalyLabels {
+    pub anomaly_type: String,
+    pub metric_name: String,
+}
+
+/// Labels for observability correlation metrics
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct ObservabilityCorrelationLabels {
+    pub correlation_type: String,
+}
+
+/// Labels for observability baseline metrics
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct ObservabilityBaselineLabels {
+    pub metric_name: String,
+}
+
+/// Gauge: 1 if the observability pipeline is running
+pub static OBSERVABILITY_PIPELINE_UP: Lazy<Gauge<i64, AtomicI64>> = Lazy::new(Gauge::default);
+
+/// Counter: total events ingested by source (Metric, Log, Trace, Alert, Audit)
+pub static OBSERVABILITY_EVENTS_INGESTED_TOTAL: Lazy<
+    Family<ObservabilitySourceLabels, Counter<u64, AtomicU64>>,
+> = Lazy::new(Family::default);
+
+/// Counter: total anomalies detected by type and metric name
+pub static OBSERVABILITY_ANOMALIES_TOTAL: Lazy<
+    Family<ObservabilityAnomalyLabels, Counter<u64, AtomicU64>>,
+> = Lazy::new(Family::default);
+
+/// Gauge: currently active (unresolved) anomalies
+pub static OBSERVABILITY_ANOMALIES_ACTIVE: Lazy<Gauge<i64, AtomicI64>> = Lazy::new(Gauge::default);
+
+/// Counter: total intelligent alerts generated
+pub static OBSERVABILITY_ALERTS_TOTAL: Lazy<Counter<u64, AtomicU64>> = Lazy::new(Counter::default);
+
+/// Gauge: currently active (unresolved) alerts
+pub static OBSERVABILITY_ALERTS_ACTIVE: Lazy<Gauge<i64, AtomicI64>> = Lazy::new(Gauge::default);
+
+/// Counter: alerts suppressed by deduplication
+pub static OBSERVABILITY_ALERTS_DEDUPLICATED_TOTAL: Lazy<Counter<u64, AtomicU64>> =
+    Lazy::new(Counter::default);
+
+/// Counter: alerts resolved
+pub static OBSERVABILITY_ALERTS_RESOLVED_TOTAL: Lazy<Counter<u64, AtomicU64>> =
+    Lazy::new(Counter::default);
+
+/// Counter: event correlations found by type
+pub static OBSERVABILITY_CORRELATIONS_TOTAL: Lazy<
+    Family<ObservabilityCorrelationLabels, Counter<u64, AtomicU64>>,
+> = Lazy::new(Family::default);
+
+/// Gauge: currently open incidents
+pub static OBSERVABILITY_INCIDENTS_OPEN: Lazy<Gauge<i64, AtomicI64>> = Lazy::new(Gauge::default);
+
+/// Counter: incidents resolved
+pub static OBSERVABILITY_INCIDENTS_RESOLVED_TOTAL: Lazy<Counter<u64, AtomicU64>> =
+    Lazy::new(Counter::default);
+
+/// Gauge: mean time to resolve incidents in seconds
+pub static OBSERVABILITY_INCIDENT_MTTR_SECONDS: Lazy<Gauge<f64, AtomicU64>> =
+    Lazy::new(Gauge::default);
+
+/// Gauge: confidence of the most recent root cause analysis (0.0–1.0)
+pub static OBSERVABILITY_RCA_CONFIDENCE: Lazy<Gauge<f64, AtomicU64>> = Lazy::new(Gauge::default);
+
+/// Counter: predictive alerts generated
+pub static OBSERVABILITY_PREDICTIVE_ALERTS_TOTAL: Lazy<Counter<u64, AtomicU64>> =
+    Lazy::new(Counter::default);
+
+/// Gauge: number of baseline samples per metric
+pub static OBSERVABILITY_BASELINE_SAMPLES: Lazy<
+    Family<ObservabilityBaselineLabels, Gauge<i64, AtomicI64>>,
+> = Lazy::new(Family::default);
+
+// ── Observability helper functions ────────────────────────────────────────
+
+/// Record an ingested observability event
+pub fn inc_observability_event(source: &str) {
+    OBSERVABILITY_EVENTS_INGESTED_TOTAL
+        .get_or_create(&ObservabilitySourceLabels {
+            source: source.to_string(),
+        })
+        .inc();
+}
+
+/// Record a detected anomaly
+pub fn inc_observability_anomaly(anomaly_type: &str, metric_name: &str) {
+    OBSERVABILITY_ANOMALIES_TOTAL
+        .get_or_create(&ObservabilityAnomalyLabels {
+            anomaly_type: anomaly_type.to_string(),
+            metric_name: metric_name.to_string(),
+        })
+        .inc();
+    let current = OBSERVABILITY_ANOMALIES_ACTIVE.get();
+    OBSERVABILITY_ANOMALIES_ACTIVE.set(current + 1);
+}
+
+/// Record a new alert
+pub fn inc_observability_alert() {
+    OBSERVABILITY_ALERTS_TOTAL.inc();
+    let current = OBSERVABILITY_ALERTS_ACTIVE.get();
+    OBSERVABILITY_ALERTS_ACTIVE.set(current + 1);
+}
+
+/// Record a deduplicated (suppressed) alert
+pub fn inc_observability_alert_deduplicated() {
+    OBSERVABILITY_ALERTS_DEDUPLICATED_TOTAL.inc();
+}
+
+/// Record a resolved alert
+pub fn inc_observability_alert_resolved() {
+    OBSERVABILITY_ALERTS_RESOLVED_TOTAL.inc();
+    let current = OBSERVABILITY_ALERTS_ACTIVE.get();
+    OBSERVABILITY_ALERTS_ACTIVE.set((current - 1).max(0));
+}
+
+/// Record a correlation found
+pub fn inc_observability_correlation(correlation_type: &str) {
+    OBSERVABILITY_CORRELATIONS_TOTAL
+        .get_or_create(&ObservabilityCorrelationLabels {
+            correlation_type: correlation_type.to_string(),
+        })
+        .inc();
+}
+
+/// Update open incident count
+pub fn set_observability_incidents_open(count: i64) {
+    OBSERVABILITY_INCIDENTS_OPEN.set(count);
+}
+
+/// Record a resolved incident
+pub fn inc_observability_incident_resolved() {
+    OBSERVABILITY_INCIDENTS_RESOLVED_TOTAL.inc();
+}
+
+/// Update MTTR
+pub fn set_observability_mttr_seconds(mttr: f64) {
+    OBSERVABILITY_INCIDENT_MTTR_SECONDS.set(mttr);
+}
+
+/// Update RCA confidence
+pub fn set_observability_rca_confidence(confidence: f64) {
+    OBSERVABILITY_RCA_CONFIDENCE.set(confidence);
+}
+
+/// Record a predictive alert
+pub fn inc_observability_predictive_alert() {
+    OBSERVABILITY_PREDICTIVE_ALERTS_TOTAL.inc();
+}
+
+/// Update baseline sample count for a metric
+pub fn set_observability_baseline_samples(metric_name: &str, count: i64) {
+    OBSERVABILITY_BASELINE_SAMPLES
+        .get_or_create(&ObservabilityBaselineLabels {
+            metric_name: metric_name.to_string(),
+        })
+        .set(count);
+}
 
 /// Initialise the `stellar_operator_info` gauge with build-time labels.
 /// Call once at startup after the registry is first accessed.

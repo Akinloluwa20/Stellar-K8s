@@ -37,4 +37,4 @@ README.md              @stellar-k8s-maintainers @docs-team
 
 # Benchmarking
 /benchmarks/           @performance-team
-/.github/workflows/benchmark.yml @performance-team
+/.github/workflows/performance.yml @performance-team

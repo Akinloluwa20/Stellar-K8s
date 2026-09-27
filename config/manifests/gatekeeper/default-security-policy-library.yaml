@@ -1,0 +1,68 @@
+# Copyright 2024 Stellar-K8s Contributors
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stellar-default-security-policy-library
+  namespace: gatekeeper-system
+  labels:
+    app.kubernetes.io/name: stellar-default-security-policy-library
+    app.kubernetes.io/part-of: stellar-k8s
+    app.kubernetes.io/component: policy-library
+    app.kubernetes.io/managed-by: stellar-operator
+data:
+  required-labels.yaml: |
+    apiVersion: constraints.gatekeeper.sh/v1beta1
+    kind: K8sRequiredLabels
+    metadata:
+      name: stellar-required-labels
+    spec:
+      match:
+        kinds:
+          - apiGroups: ["stellar.org"]
+            kinds: ["StellarNode"]
+      parameters:
+        labels: ["project-id", "owner"]
+
+  approved-registries.yaml: |
+    apiVersion: constraints.gatekeeper.sh/v1beta1
+    kind: K8sApprovedRegistries
+    metadata:
+      name: stellar-approved-registries
+    spec:
+      match:
+        kinds:
+          - apiGroups: ["stellar.org"]
+            kinds: ["StellarNode"]
+      parameters:
+        registries:
+          - ghcr.io
+          - docker.io/stellar
+
+  resource-limits.yaml: |
+    apiVersion: constraints.gatekeeper.sh/v1beta1
+    kind: K8sRequiredResources
+    metadata:
+      name: stellar-required-resource-limits
+    spec:
+      match:
+        kinds:
+          - apiGroups: ["stellar.org"]
+            kinds: ["StellarNode"]
+      parameters:
+        limits: ["cpu", "memory"]
+
+  stellarnode-cel-rules.txt: |
+    self.nodeType != 'Horizon' || has(self.horizonConfig)
+    self.nodeType != 'Validator' || has(self.validatorConfig)
+    !has(self.customNetworkPassphrase) || self.network == 'Custom'

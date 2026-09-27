@@ -1,3 +1,15 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 //! Background job tracking and monitoring dashboard.
 //!
 //! Provides an in-memory registry of background jobs (reconcile loops, archive
@@ -78,6 +90,7 @@ pub enum JobKind {
     CrossClusterCheck,
     /// Webhook delivery retry.
     WebhookDelivery,
+
     /// Any other job not covered above.
     Other(String),
 }
@@ -306,6 +319,7 @@ impl JobRegistry {
                         JobKind::BlueGreenRollout => "blue_green_rollout",
                         JobKind::CrossClusterCheck => "cross_cluster_check",
                         JobKind::WebhookDelivery => "webhook_delivery",
+
                         JobKind::Other(s) => s.as_str(),
                     };
                     kind_str == k
@@ -508,6 +522,15 @@ mod tests {
         let jobs = r.list(None, None);
         assert_eq!(jobs[0].name, "third");
         assert_eq!(jobs[2].name, "first");
+    }
+
+    #[test]
+    fn test_leader_election_filter() {
+        let r = make_registry();
+        let _h = r.register("leader-election", JobKind::LeaderElection, None);
+        let jobs = r.list(None, Some("leader_election"));
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].kind, JobKind::LeaderElection);
     }
 
     #[test]

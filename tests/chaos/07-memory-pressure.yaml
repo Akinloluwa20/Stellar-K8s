@@ -1,0 +1,52 @@
+# Copyright 2024 Stellar-K8s Contributors
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# tests/chaos/07-memory-pressure.yaml
+#
+# Experiment 7: Memory pressure on the operator pod.
+#
+# What this tests:
+#   The operator pod's available memory is consumed by a stress process,
+#   simulating a memory leak, a large cache, or a co-located workload
+#   competing for RAM. The operator must handle allocation failures gracefully
+#   and must not be OOM-killed by the kernel.
+#
+# Expected outcome:
+#   - Operator pod stays Running (no OOMKill).
+#   - Reconciliation loop continues under memory pressure.
+#   - All StellarNodes converge to Ready within 10 minutes.
+#   - No memory corruption or data races in the operator.
+
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: operator-memory-pressure
+  namespace: chaos-testing
+  labels:
+    app.kubernetes.io/part-of: stellar-chaos-suite
+    chaos/experiment: "07-memory-pressure"
+    chaos/category: "resource-exhaustion"
+spec:
+  mode: one
+  selector:
+    namespaces:
+      - stellar-system
+    labelSelectors:
+      app: stellar-operator
+  stressors:
+    memory:
+      workers: 2
+      size: "256MB"       # Consume 256 MB of memory
+      time: "60s"         # Hold for 60 seconds
+  duration: "60s"
+  scheduler:
+    cron: "@once"

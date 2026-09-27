@@ -29,7 +29,7 @@ fn cache_now() -> CacheTimestamp {
 fn cache_expired(inserted_at: &CacheTimestamp, ttl_secs: u64) -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        Instant::now().duration_since(inserted_at.clone()) >= Duration::from_secs(ttl_secs)
+        Instant::now().duration_since(*inserted_at) >= Duration::from_secs(ttl_secs)
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -84,19 +84,29 @@ impl CacheConfig {
     /// Reject unsafe or unusable limits before the cache is constructed.
     pub fn validate(&self) -> Result<(), CacheError> {
         if self.ttl_secs == 0 {
-            return Err(CacheError::InvalidConfig("ttl_secs must be greater than zero"));
+            return Err(CacheError::InvalidConfig(
+                "ttl_secs must be greater than zero",
+            ));
         }
         if self.max_entries == 0 {
-            return Err(CacheError::InvalidConfig("max_entries must be greater than zero"));
+            return Err(CacheError::InvalidConfig(
+                "max_entries must be greater than zero",
+            ));
         }
         if self.max_bytes == 0 {
-            return Err(CacheError::InvalidConfig("max_bytes must be greater than zero"));
+            return Err(CacheError::InvalidConfig(
+                "max_bytes must be greater than zero",
+            ));
         }
         if self.max_entries > MAX_CACHE_ENTRIES {
-            return Err(CacheError::InvalidConfig("max_entries exceeds the sandbox limit"));
+            return Err(CacheError::InvalidConfig(
+                "max_entries exceeds the sandbox limit",
+            ));
         }
         if self.max_bytes > MAX_CACHE_BYTES {
-            return Err(CacheError::InvalidConfig("max_bytes exceeds the sandbox limit"));
+            return Err(CacheError::InvalidConfig(
+                "max_bytes exceeds the sandbox limit",
+            ));
         }
         Ok(())
     }

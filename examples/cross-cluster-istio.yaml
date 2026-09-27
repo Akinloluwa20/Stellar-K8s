@@ -17,7 +17,7 @@ metadata:
     cluster: "primary"
 spec:
   nodeType: Validator
-  network: Mainnet
+  network: mainnet
   version: "v21.0.0"
 
 
@@ -44,7 +44,7 @@ spec:
   # Cross-cluster with Istio
   crossCluster:
     enabled: true
-    mode: ServiceMesh
+    mode: serviceMesh
 
     serviceMesh:
       meshType: istio
@@ -57,7 +57,7 @@ spec:
         namespace: "stellar-nodes"
 
       # Latency-based routing for optimal performance
-      trafficPolicy: LatencyBased
+      trafficPolicy: latencyBased
 
     peerClusters:
       - clusterId: "remote-1"

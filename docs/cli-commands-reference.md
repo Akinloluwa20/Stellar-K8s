@@ -293,6 +293,29 @@ stellar-operator completions zsh > ~/.zsh/completion/_stellar-operator
 stellar-operator completions fish > ~/.config/fish/completions/stellar-operator.fish
 ```
 
+### install-completion
+
+Automatically install shell completion scripts to your user's home directory.
+
+```bash
+stellar-operator install-completion <SHELL>
+```
+
+**Arguments:**
+- `<SHELL>`: The shell to install completions for (`bash`, `zsh`, `fish`, `powershell`, `elvish`)
+
+**Examples:**
+```bash
+# Install bash completion script to ~/.local/share/bash-completion/completions/
+stellar-operator install-completion bash
+
+# Install zsh completion script to ~/.zsh/completions/
+stellar-operator install-completion zsh
+
+# Install fish completion script to ~/.config/fish/completions/
+stellar-operator install-completion fish
+```
+
 ## Global Options
 
 Available for all commands:
@@ -323,6 +346,9 @@ Available for all commands:
 | `STELLAR_OFFLINE` | Offline mode | false |
 
 ## Exit Codes
+
+Every subcommand returns its error through `Error::exit_code()` (`src/error.rs`),
+so the code below is consistent across all commands rather than per-command.
 
 | Code | Meaning |
 |------|---------|
@@ -414,6 +440,6 @@ stellar-operator diff \
 ## Related Documentation
 
 - [Benchmark Compare Guide](./benchmark-compare.md)
-- [Troubleshooting](./troubleshooting.md)
-- [Monitoring Setup](./monitoring-setup.md)
+- Troubleshooting
+- Monitoring Setup
 - [Development Guide](./development.md)

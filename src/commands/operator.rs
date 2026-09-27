@@ -1,3 +1,15 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 use chrono::Utc;
 use k8s_openapi::api::coordination::v1::Lease;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
@@ -5,11 +17,13 @@ use kube::api::{Api, ObjectMeta, Patch, PatchParams, PostParams};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{info, info_span, warn, Instrument, Level};
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-use crate::cli::RunArgs;
-use stellar_k8s::log_scrub::ScrubLayer;
-use stellar_k8s::{controller, preflight, Error};
+use crate::cli::{LogFormat, RunArgs};
+use crate::logging::analytics::AnalyticsEngine;
+use crate::logging::{init_subscriber, LogOutputFormat, SubscriberConfig};
+#[cfg(feature = "rest-api")]
+use crate::rest_api::metrics_store::StellarMetricsStore;
+use crate::{controller, preflight, Error};
 
 const LEASE_NAME: &str = "stellar-operator-leader";
 const LEASE_DURATION_SECS: i32 = 15;
@@ -42,31 +56,28 @@ pub async fn run_operator(args: RunArgs) -> Result<(), Error> {
         return Ok(());
     }
 
-    // Initialize tracing with OpenTelemetry
-    let env_filter = EnvFilter::builder()
-        .with_default_directive(Level::INFO.into())
-        .from_env_lossy();
+    // Initialize tracing with consistent redacting formatters
+    let log_format = match args.log_format {
+        LogFormat::Json => LogOutputFormat::Json,
+        LogFormat::Pretty => LogOutputFormat::Pretty,
+    };
+    let log_level = args.log_level.parse().unwrap_or(Level::INFO);
 
-    let (env_filter, reload_handle) = tracing_subscriber::reload::Layer::new(env_filter);
-
-    let fmt_layer = fmt::layer().json().with_target(true);
-
-    // Register the subscriber with both stdout logging and OpenTelemetry tracing
-    let registry = tracing_subscriber::registry()
-        .with(env_filter)
-        .with(ScrubLayer::new())
-        .with(fmt_layer);
-
-    // Only enable OTEL if an endpoint is provided or via a flag
+    let subscriber = init_subscriber(SubscriberConfig {
+        level: log_level,
+        format: log_format,
+        analytics: true,
+        reload_handle: true,
+        otel: true,
+    });
+    let reload_handle = subscriber
+        .guard
+        .reload_handle
+        .expect("reload handle requested");
+    let analytics_engine = subscriber
+        .analytics_engine
+        .unwrap_or_else(|| Arc::new(AnalyticsEngine::new(std::time::Duration::from_secs(3600))));
     let otel_enabled = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok();
-
-    if otel_enabled {
-        let otel_layer = stellar_k8s::telemetry::init_telemetry(&registry);
-        let trace_id_layer = stellar_k8s::telemetry::trace_id_layer();
-        registry.with(otel_layer).with(trace_id_layer).init();
-    } else {
-        registry.init();
-    }
 
     let root_span = info_span!(
         "operator",
@@ -129,7 +140,7 @@ pub async fn run_operator(args: RunArgs) -> Result<(), Error> {
             "Running in scheduler mode with name: {}",
             args.scheduler_name
         );
-        let scheduler = stellar_k8s::scheduler::core::Scheduler::new(client, args.scheduler_name);
+        let scheduler = crate::scheduler::core::Scheduler::new(client, args.scheduler_name);
         return scheduler
             .run()
             .await
@@ -186,7 +197,16 @@ pub async fn run_operator(args: RunArgs) -> Result<(), Error> {
 
         tokio::spawn(
             async move {
-                run_leader_election(lease_client, &lease_ns, &identity, is_leader_bg).await;
+                let leader_flag = is_leader_bg.clone();
+                let election_task = run_leader_election(lease_client, &lease_ns, &identity, leader_flag);
+                tokio::pin!(election_task);
+                tokio::select! {
+                    _ = &mut election_task => {}
+                    _ = tokio::signal::ctrl_c() => {
+                        info!("Shutdown signal received, releasing leader lease");
+                        is_leader_bg.store(false, Ordering::SeqCst);
+                    }
+                }
             }
             .instrument(root_span.clone()),
         );
@@ -211,6 +231,30 @@ pub async fn run_operator(args: RunArgs) -> Result<(), Error> {
     let operator_config = controller::OperatorConfig::load();
     #[cfg(feature = "rest-api")]
     let oidc_config = operator_config.oidc.clone();
+    let audit_log = Arc::new(controller::AuditLog::new());
+    let audit_sink: Option<Arc<dyn controller::audit_sink::AuditSink>> =
+        if operator_config.audit.enabled {
+            if let Some(s3_config) = &operator_config.audit.s3 {
+                Some(
+                    Arc::new(controller::audit_sink::S3AuditSink::new(s3_config.clone()).await)
+                        as Arc<dyn controller::audit_sink::AuditSink>,
+                )
+            } else {
+                Some(Arc::new(controller::audit_sink::NoopAuditSink)
+                    as Arc<dyn controller::audit_sink::AuditSink>)
+            }
+        } else {
+            None
+        };
+    let audit_recorder = Arc::new(controller::AuditRecorder::new(
+        audit_log.clone(),
+        audit_sink.into_iter().collect(),
+        None,
+    ));
+    let anomaly_detector = Arc::new(controller::AnomalyDetector::new(
+        operator_config.anomaly_detection.clone(),
+    ));
+
     let state = Arc::new(controller::ControllerState {
         client: client.clone(),
         enable_mtls: args.enable_mtls,
@@ -233,9 +277,15 @@ pub async fn run_operator(args: RunArgs) -> Result<(), Error> {
         log_level_expires_at: Arc::new(tokio::sync::Mutex::new(None)),
         last_event_received: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         job_registry: Arc::new(controller::JobRegistry::new()),
-        audit_log: Arc::new(controller::AuditLog::new()),
+        audit_log: audit_log.clone(),
+        audit_recorder: audit_recorder.clone(),
+        anomaly_detector: anomaly_detector.clone(),
+        plugin_registry: Arc::new(crate::plugin_sdk::PluginRegistry::new()),
+        analytics_engine: analytics_engine.clone(),
         #[cfg(feature = "rest-api")]
         oidc_config,
+        #[cfg(feature = "rest-api")]
+        metrics_store: Arc::new(StellarMetricsStore::new()),
     });
 
     // Start the peer discovery manager
@@ -258,22 +308,24 @@ pub async fn run_operator(args: RunArgs) -> Result<(), Error> {
         let ff_client = client.clone();
         let ff_namespace = args.namespace.clone();
         let ff_flags = feature_flags.clone();
-        let ff_audit_sink = if state.operator_config.audit.enabled {
-            if let Some(s3_config) = &state.operator_config.audit.s3 {
-                Some(
-                    Arc::new(controller::audit_sink::S3AuditSink::new(s3_config.clone()).await)
-                        as Arc<dyn controller::audit_sink::AuditSink>,
-                )
-            } else {
-                Some(Arc::new(controller::audit_sink::NoopAuditSink)
-                    as Arc<dyn controller::audit_sink::AuditSink>)
-            }
+        let ff_audit_recorder = if state.operator_config.audit.enabled {
+            Some(audit_recorder.clone())
         } else {
             None
         };
 
         tokio::spawn(async move {
-            controller::watch_feature_flags(ff_client, ff_namespace, ff_flags, ff_audit_sink).await;
+            controller::watch_feature_flags(ff_client, ff_namespace, ff_flags, ff_audit_recorder)
+                .await;
+        });
+    }
+
+    // Start anomaly detection loop
+    {
+        let detector_state = state.clone();
+        let detector = anomaly_detector.clone();
+        tokio::spawn(async move {
+            controller::run_anomaly_detection(detector_state, detector).await;
         });
     }
 
@@ -284,19 +336,15 @@ pub async fn run_operator(args: RunArgs) -> Result<(), Error> {
         let rustls_config = mtls_config
             .as_ref()
             .and_then(|cfg| {
-                stellar_k8s::rest_api::build_tls_server_config(
-                    &cfg.cert_pem,
-                    &cfg.key_pem,
-                    &cfg.ca_pem,
-                )
-                .ok()
+                crate::rest_api::build_tls_server_config(&cfg.cert_pem, &cfg.key_pem, &cfg.ca_pem)
+                    .ok()
             })
             .map(axum_server::tls_rustls::RustlsConfig::from_config);
         let server_tls = rustls_config.clone();
 
         tokio::spawn(
             async move {
-                if let Err(e) = stellar_k8s::rest_api::run_server(api_state, server_tls).await {
+                if let Err(e) = crate::rest_api::run_server(api_state, server_tls).await {
                     tracing::error!("REST API server error: {:?}", e);
                 }
             }
@@ -343,7 +391,7 @@ pub async fn run_operator(args: RunArgs) -> Result<(), Error> {
                                         secret.data.as_ref().and_then(|d| d.get("tls.key")),
                                         secret.data.as_ref().and_then(|d| d.get("ca.crt")),
                                     ) {
-                                        match stellar_k8s::rest_api::build_tls_server_config(
+                                        match crate::rest_api::build_tls_server_config(
                                             &cert.0, &key.0, &ca.0,
                                         ) {
                                             Ok(new_config) => {
@@ -402,6 +450,37 @@ pub async fn run_operator(args: RunArgs) -> Result<(), Error> {
         info!("Auto-snapshot worker spawned");
     }
 
+    // Start the snapshot integrity checker background worker
+    {
+        use crate::controller::snapshot_integrity::{
+            SnapshotIntegrityChecker, SnapshotIntegrityConfig,
+        };
+
+        let integrity_client = client.clone();
+        let integrity_config = std::env::var("SNAPSHOT_INTEGRITY_CONFIG")
+            .ok()
+            .and_then(|s| serde_json::from_str::<SnapshotIntegrityConfig>(&s).ok())
+            .unwrap_or_default();
+
+        if integrity_config.enabled {
+            info!(
+                "Starting snapshot integrity checker (schedule: {})",
+                integrity_config.schedule
+            );
+            tokio::spawn(
+                async move {
+                    let checker = SnapshotIntegrityChecker::new(integrity_config, integrity_client);
+                    if let Err(e) = checker.start().await {
+                        tracing::error!("Snapshot integrity checker error: {:?}", e);
+                    }
+                }
+                .instrument(root_span.clone()),
+            );
+        } else {
+            info!("Snapshot integrity checker disabled (set SNAPSHOT_INTEGRITY_CONFIG to enable)");
+        }
+    }
+
     let result = tokio::select! {
         res = controller::run_controller(state) => {
             res
@@ -415,7 +494,7 @@ pub async fn run_operator(args: RunArgs) -> Result<(), Error> {
         }
     };
 
-    stellar_k8s::telemetry::shutdown_telemetry();
+    crate::telemetry::shutdown_telemetry();
     result
 }
 

@@ -22,9 +22,9 @@ use std::{
         Arc,
     },
 };
+use stellar_wasm_cache::{CacheConfig, StateCache};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
-use stellar_wasm_cache::{CacheConfig, StateCache};
 
 const DEFAULT_LISTEN: &str = "0.0.0.0:18000";
 const DEFAULT_UPSTREAM: &str = "http://127.0.0.1:8000";
@@ -110,7 +110,10 @@ async fn stats(State(state): State<AppState>) -> Response {
         "storedBytes": cache_stats.stored_bytes,
         "upstreamRequests": state.upstream_requests.load(Ordering::Relaxed),
     });
-    json_response(StatusCode::OK, serde_json::to_vec(&body).unwrap_or_default())
+    json_response(
+        StatusCode::OK,
+        serde_json::to_vec(&body).unwrap_or_default(),
+    )
 }
 
 async fn proxy(State(state): State<AppState>, body: Bytes) -> Response {
@@ -144,7 +147,10 @@ async fn proxy(State(state): State<AppState>, body: Bytes) -> Response {
         Ok(body) => body,
         Err(error) => {
             warn!(%error, "Failed to read Soroban upstream response");
-            return text_response(StatusCode::BAD_GATEWAY, "failed to read upstream RPC response");
+            return text_response(
+                StatusCode::BAD_GATEWAY,
+                "failed to read upstream RPC response",
+            );
         }
     };
 
@@ -192,9 +198,11 @@ fn cache_key(body: &[u8]) -> Option<String> {
         return None;
     }
     let params = object.get("params").cloned().unwrap_or(Value::Null);
-    catch_unwind(AssertUnwindSafe(|| StateCache::request_key(method, &params)))
-        .ok()
-        .and_then(|result| result.ok())
+    catch_unwind(AssertUnwindSafe(|| {
+        StateCache::request_key(method, &params)
+    }))
+    .ok()
+    .and_then(|result| result.ok())
 }
 
 fn is_cacheable_response(body: &[u8]) -> bool {
@@ -222,7 +230,10 @@ fn rewrite_response_id(body: Vec<u8>, request_id: Option<Value>) -> Vec<u8> {
 fn json_response(status: StatusCode, body: Vec<u8>) -> Response {
     Response::builder()
         .status(status)
-        .header(header::CONTENT_TYPE, HeaderValue::from_static("application/json"))
+        .header(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )
         .body(axum::body::Body::from(body))
         .expect("valid response")
 }
@@ -244,7 +255,8 @@ mod tests {
         let read = br#"{"jsonrpc":"2.0","id":1,"method":"getLedgerEntries","params":{}}"#;
         let write = br#"{"jsonrpc":"2.0","id":1,"method":"sendTransaction","params":{}}"#;
         assert!(cache_key(read).is_some());
-        let notification = br#"{\"jsonrpc\":\"2.0\",\"method\":\"getLedgerEntries\",\"params\":{}}"#;
+        let notification =
+            br#"{\"jsonrpc\":\"2.0\",\"method\":\"getLedgerEntries\",\"params\":{}}"#;
         assert!(cache_key(write).is_none());
         assert!(cache_key(notification).is_none());
     }

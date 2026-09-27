@@ -1,3 +1,15 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 //! Unit tests for disaster recovery (DR) logic
 //!
 //! Covers: DR config enabled/disabled, Primary/Standby role assignment,
@@ -23,6 +35,7 @@ mod tests {
             failover_dns: None,
             health_check_interval: 30,
             drill_schedule: None,
+            policy_ref: None,
             archive_integrity_config: None,
         }
     }
@@ -45,6 +58,7 @@ mod tests {
             failover_dns: None,
             health_check_interval: 30,
             drill_schedule: None,
+            policy_ref: None,
             archive_integrity_config: None,
         };
         // When enabled is false the reconciler returns Ok(None).
@@ -162,6 +176,9 @@ mod tests {
                 priority: 50,
                 port: None,
                 enabled: true,
+                kubeconfig_secret_key: "kubeconfig".to_string(),
+                kubeconfig_secret_ref: Some("secret".to_string()),
+                target_namespace: None,
             },
             PeerClusterConfig {
                 cluster_id: "us-east-1".to_string(),
@@ -171,6 +188,9 @@ mod tests {
                 priority: 150,
                 port: None,
                 enabled: true,
+                kubeconfig_secret_key: "kubeconfig".to_string(),
+                kubeconfig_secret_ref: Some("secret".to_string()),
+                target_namespace: None,
             },
             PeerClusterConfig {
                 cluster_id: "ap-south-1".to_string(),
@@ -180,6 +200,9 @@ mod tests {
                 priority: 100,
                 port: None,
                 enabled: true,
+                kubeconfig_secret_key: "kubeconfig".to_string(),
+                kubeconfig_secret_ref: Some("secret".to_string()),
+                target_namespace: None,
             },
         ];
 
@@ -202,6 +225,9 @@ mod tests {
                 priority: 100,
                 port: None,
                 enabled: true,
+                kubeconfig_secret_key: "kubeconfig".to_string(),
+                kubeconfig_secret_ref: Some("secret".to_string()),
+                target_namespace: None,
             },
             PeerClusterConfig {
                 cluster_id: "us-west-1".to_string(),
@@ -211,6 +237,9 @@ mod tests {
                 priority: 80,
                 port: None,
                 enabled: false, // disabled – should be skipped
+                kubeconfig_secret_key: "kubeconfig".to_string(),
+                kubeconfig_secret_ref: Some("secret".to_string()),
+                target_namespace: None,
             },
         ];
 

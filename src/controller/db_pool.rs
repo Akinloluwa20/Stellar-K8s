@@ -1,3 +1,15 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 //! PostgreSQL connection pool configuration and factory.
 //!
 //! Provides a configurable `sqlx::PgPool` builder with support for:
@@ -18,6 +30,8 @@
 //!     connection_timeout_secs: 5,
 //!     idle_timeout_secs: Some(300),
 //!     query_timeout_ms: Some(30_000),
+//!     max_lifetime_secs: None,
+//!     test_before_acquire: true,
 //! };
 //! let pool = create_pool(&config).await?;
 //! # Ok(())
@@ -54,6 +68,15 @@ pub struct DbPoolConfig {
     /// being closed.  `None` keeps connections open indefinitely.
     pub idle_timeout_secs: Option<u64>,
 
+    /// How long (in seconds) a connection may remain open before it is recycled.
+    /// This helps avoid stale connections and long-lived transactions in highly
+    /// dynamic clusters.
+    pub max_lifetime_secs: Option<u64>,
+
+    /// Whether the pool should test a physical connection before handing it to
+    /// the caller. This can prevent bad connections from being reused.
+    pub test_before_acquire: bool,
+
     /// Statement-level query timeout in milliseconds applied to every new
     /// connection via `SET statement_timeout = <ms>`.  `None` disables the
     /// per-connection timeout.
@@ -73,6 +96,8 @@ impl Default for DbPoolConfig {
             max_connections: DEFAULT_MAX_CONNECTIONS,
             connection_timeout_secs: DEFAULT_CONNECTION_TIMEOUT_SECS,
             idle_timeout_secs: None,
+            max_lifetime_secs: None,
+            test_before_acquire: false,
             query_timeout_ms: None,
         }
     }
@@ -95,6 +120,12 @@ pub async fn create_pool(config: &DbPoolConfig) -> Result<PgPool> {
     if let Some(idle_secs) = config.idle_timeout_secs {
         opts = opts.idle_timeout(Duration::from_secs(idle_secs));
     }
+
+    if let Some(max_secs) = config.max_lifetime_secs {
+        opts = opts.max_lifetime(Duration::from_secs(max_secs));
+    }
+
+    opts = opts.test_before_acquire(config.test_before_acquire);
 
     // Apply statement_timeout on each new physical connection.
     let query_timeout_ms = config.query_timeout_ms;
@@ -130,6 +161,8 @@ mod tests {
         assert_eq!(cfg.max_connections, DEFAULT_MAX_CONNECTIONS);
         assert_eq!(cfg.connection_timeout_secs, DEFAULT_CONNECTION_TIMEOUT_SECS);
         assert!(cfg.idle_timeout_secs.is_none());
+        assert!(cfg.max_lifetime_secs.is_none());
+        assert!(!cfg.test_before_acquire);
         assert!(cfg.query_timeout_ms.is_none());
         assert!(cfg.database_url.is_empty());
     }
@@ -141,11 +174,15 @@ mod tests {
             max_connections: 20,
             connection_timeout_secs: 3,
             idle_timeout_secs: Some(600),
+            max_lifetime_secs: Some(7200),
+            test_before_acquire: true,
             query_timeout_ms: Some(5_000),
         };
         assert_eq!(cfg.max_connections, 20);
         assert_eq!(cfg.connection_timeout_secs, 3);
         assert_eq!(cfg.idle_timeout_secs, Some(600));
+        assert_eq!(cfg.max_lifetime_secs, Some(7200));
+        assert!(cfg.test_before_acquire);
         assert_eq!(cfg.query_timeout_ms, Some(5_000));
     }
 
@@ -156,12 +193,16 @@ mod tests {
             max_connections: 10,
             connection_timeout_secs: 5,
             idle_timeout_secs: Some(300),
+            max_lifetime_secs: Some(1800),
+            test_before_acquire: true,
             query_timeout_ms: Some(10_000),
         };
         let cloned = original.clone();
         assert_eq!(cloned.max_connections, original.max_connections);
         assert_eq!(cloned.database_url, original.database_url);
         assert_eq!(cloned.query_timeout_ms, original.query_timeout_ms);
+        assert_eq!(cloned.max_lifetime_secs, original.max_lifetime_secs);
+        assert_eq!(cloned.test_before_acquire, original.test_before_acquire);
     }
 
     #[test]
@@ -180,6 +221,8 @@ mod tests {
             max_connections: 2,
             connection_timeout_secs: 1,
             idle_timeout_secs: Some(60),
+            max_lifetime_secs: None,
+            test_before_acquire: true,
             query_timeout_ms: None,
         };
         assert_eq!(cfg.idle_timeout_secs, Some(60));
@@ -193,6 +236,8 @@ mod tests {
             max_connections: 2,
             connection_timeout_secs: 1,
             idle_timeout_secs: None,
+            max_lifetime_secs: None,
+            test_before_acquire: true,
             query_timeout_ms: Some(15_000),
         };
         assert_eq!(cfg.query_timeout_ms, Some(15_000));
@@ -212,6 +257,8 @@ mod tests {
             max_connections: 1,
             connection_timeout_secs: 1,
             idle_timeout_secs: None,
+            max_lifetime_secs: None,
+            test_before_acquire: true,
             query_timeout_ms: Some(0),
         };
         // 0 ms means queries are not cancelled immediately in PostgreSQL

@@ -1,3 +1,15 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 //! Outbound Webhook Delivery System for Transaction Events
 //!
 //! This module provides an HTTP outbound webhook delivery system that fires
@@ -19,7 +31,7 @@
 //!
 //! ```rust,no_run
 //! use stellar_k8s::controller::webhook_delivery::{
-//!     WebhookDeliveryService, WebhookEndpoint, WebhookEvent, TransactionEventPayload,
+//!     WebhookDeliveryService, WebhookEndpoint, WebhookEvent, WebhookEventType,
 //! };
 //! use std::sync::Arc;
 //!
@@ -35,7 +47,7 @@
 //!         enabled: true,
 //!         max_retries: 3,
 //!     };
-//!     svc.register_endpoint(endpoint);
+//!     svc.register_endpoint(endpoint).await;
 //!
 //!     let event = WebhookEvent::node_status_changed("stellar", "my-validator", "Ready");
 //!     svc.dispatch(event).await;
