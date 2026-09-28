@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[derive(default)]
 pub struct Config {
     pub kafka: KafkaConfig,
@@ -47,7 +47,7 @@ impl Config {
     }
 }
 
-[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[derive(default)]
 pub struct KafkaConfig {
     pub brokers: String,
@@ -71,7 +71,7 @@ impl Default for KafkaConfig {
     }
 }
 
-[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[derive(rename_all="snake_case")]
 pub enum PartitionMode {
     Single,
@@ -84,7 +84,7 @@ impl Default for PartitionMode {
     }
 }
 
-[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[derive(default)]
 pub struct ScpStreamConfig {
     pub hash_seed: u64,
