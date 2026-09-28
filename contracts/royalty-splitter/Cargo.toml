@@ -1,0 +1,31 @@
+[package]
+name = "royalty-splitter"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Dynamic royalty splitter contract with dust-free distribution and multisig reconfiguration"
+publish = false
+
+# Standalone workspace so the contract's wasm release profile (opt-level "z",
+# panic = "abort") applies and the operator's build is unaffected.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = { version = "21", features = ["alloc"] }
+
+[dev-dependencies]
+soroban-sdk = { version = "21", features = ["alloc", "testutils"] }
+# v2 is required: soroban-env-host 21 testutils compiles against ed25519-dalek 2.
+ed25519-dalek = "2"
+rand = "0.8"
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
