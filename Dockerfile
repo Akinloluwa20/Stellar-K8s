@@ -23,6 +23,18 @@ ARG TARGETPLATFORM
 ARG TARGETARCH
 ARG BUILDPLATFORM
 
+# System dependencies required by the vendored C crates (rdkafka builds with
+# cmake-build+ssl+sasl, plus curl-sys/openssl-sys). Mirrors the package set in
+# .github/actions/setup-rust so the container build and CI stay in agreement.
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+      cmake \
+      pkg-config \
+      libssl-dev \
+      libsasl2-dev \
+      libcurl4-openssl-dev && \
+    rm -rf /var/lib/apt/lists/*
+
 # Install cross-compilation toolchains when building for arm64 on amd64 host.
 RUN if [ "$TARGETARCH" = "arm64" ] && [ "$BUILDPLATFORM" != "$TARGETPLATFORM" ]; then \
       apt-get update -qq && \
