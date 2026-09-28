@@ -1,0 +1,87 @@
+name: Soroban Contracts
+
+# Only run when the contracts (or this workflow) change. Contracts live in their
+# own Cargo workspaces under contracts/, so they are not covered by the
+# operator-oriented jobs in ci.yml.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "contracts/**"
+      - ".github/workflows/contracts.yml"
+  pull_request:
+    paths:
+      - "contracts/**"
+      - ".github/workflows/contracts.yml"
+
+concurrency:
+  group: contracts-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # soroban-sdk 28 requires stellar-cli v25.2.0+ to build the Wasm artifact.
+  STELLAR_CLI_VERSION: "28.1.0"
+
+jobs:
+  royalty-splitter:
+    name: royalty-splitter (fmt, clippy, test, wasm)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts/royalty-splitter
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          # soroban-sdk 28 rejects wasm32-unknown-unknown on newer Rust.
+          targets: wasm32v1-none
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts/royalty-splitter
+          shared-key: "contracts-royalty-splitter"
+
+      - name: Install Stellar CLI
+        run: |
+          set -euo pipefail
+          asset="stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          base="https://github.com/stellar/stellar-cli/releases/download"
+          curl -sSL "${base}/v${STELLAR_CLI_VERSION}/${asset}" -o /tmp/stellar-cli.tar.gz
+          tar -xzf /tmp/stellar-cli.tar.gz -C /tmp
+          sudo mv /tmp/stellar /usr/local/bin/stellar
+          stellar --version
+        working-directory: .
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        # Unit tests plus the integration suite, which drives the splitter
+        # through a real Stellar Asset Contract.
+        run: cargo test --locked
+
+      - name: Build contract Wasm
+        run: stellar contract build
+
+      - name: Verify Wasm artifact
+        run: |
+          set -euo pipefail
+          wasm=target/wasm32v1-none/release/royalty_splitter.wasm
+          test -s "$wasm" || { echo "::error::$wasm was not produced"; exit 1; }
+          echo "Wasm size: $(wc -c < "$wasm") bytes"
+
+      - name: Upload contract Wasm
+        uses: actions/upload-artifact@v4
+        with:
+          name: royalty-splitter-wasm
+          path: contracts/royalty-splitter/target/wasm32v1-none/release/royalty_splitter.wasm
+          if-no-files-found: error
+          retention-days: 7
