@@ -152,8 +152,12 @@ aws-config = "1.8.16"
 serde_json_diff = "0.2.0"
 json-patch = "4.1.0"
 md5 = "0.8.0"
+# PDF compliance report export (compliance::export, controller::compliance_export)
+printpdf = "0.7"
 # tar archive extraction for snapshot bootstrapping (#119)
 tar = "0.4"
+# Session/challenge identifiers (identity::session, identity::mfa, compliance_scan)
+uuid = { version = "1", features = ["v4", "serde"] }
 
 
 [build-dependencies]
