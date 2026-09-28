@@ -212,7 +212,7 @@ jobs:
       # fails on syntax/structure problems, and validates custom resources
       # against this repo's own CRDs rather than skipping them.
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -270,7 +270,7 @@ jobs:
       # interpolated data, curl | bash, missing strict mode). This gate covers
       # those; see docs/development/static-analysis-gates.md.
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -1124,7 +1124,7 @@ jobs:
           version: "3.14.0"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 

@@ -27,7 +27,7 @@ jobs:
       run:
         working-directory: contracts/royalty-splitter
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Toolchain + cache come from the shared composite; inlining
       # dtolnay/rust-toolchain is rejected by the CI Reliability Test
