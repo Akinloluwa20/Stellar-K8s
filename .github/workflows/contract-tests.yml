@@ -29,16 +29,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      # Toolchain + cache come from the shared composite; inlining
+      # dtolnay/rust-toolchain is rejected by the CI Reliability Test
+      # (see .github/CI_COMMANDS.md, issue #1175).
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
         with:
-          components: rustfmt, clippy
-          targets: wasm32-unknown-unknown
+          cache-key: "ci-contracts-royalty-splitter"
+          components: "rustfmt clippy"
 
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: contracts/royalty-splitter
+      - name: Add wasm32 target
+        run: rustup target add wasm32-unknown-unknown
 
       - name: Format check
         run: cargo fmt --check
