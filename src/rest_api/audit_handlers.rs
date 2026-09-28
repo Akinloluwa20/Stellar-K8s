@@ -1,3 +1,15 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 //! REST API handlers for the admin activity audit log.
 //!
 //! # Endpoints
@@ -29,11 +41,14 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Query, State},
+    extract::{ws::Message, ws::WebSocket, ws::WebSocketUpgrade, Query, State},
     http::StatusCode,
+    response::IntoResponse,
     Json,
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
+use tracing::debug;
 
 use crate::controller::audit_log::AuditEntry;
 use crate::controller::ControllerState;
@@ -59,6 +74,13 @@ pub struct AuditQuery {
 #[derive(Debug, Serialize)]
 pub struct AuditLogResponse {
     pub items: Vec<AuditEntry>,
+    pub total: usize,
+}
+
+/// Response envelope for anomaly detection.
+#[derive(Debug, Serialize)]
+pub struct AuditAnomalyResponse {
+    pub items: Vec<crate::controller::anomaly_detection::AnomalyEvent>,
     pub total: usize,
 }
 
@@ -92,6 +114,45 @@ pub async fn search_audit_log(
     query: Query<AuditQuery>,
 ) -> Result<Json<AuditLogResponse>, (StatusCode, Json<crate::rest_api::dto::ErrorResponse>)> {
     list_audit_log(state, query).await
+}
+
+/// `GET /api/v1/audit-log/stream`
+///
+/// Streams audit log entries over WebSocket in real time.
+pub async fn audit_log_stream(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<ControllerState>>,
+) -> impl IntoResponse {
+    let receiver = state.audit_log.subscribe();
+    ws.on_upgrade(move |socket| stream_audit_log(socket, receiver))
+}
+
+async fn stream_audit_log(mut socket: WebSocket, mut rx: broadcast::Receiver<AuditEntry>) {
+    loop {
+        match rx.recv().await {
+            Ok(entry) => {
+                if let Ok(json) = serde_json::to_string(&entry) {
+                    if socket.send(Message::Text(json.into())).await.is_err() {
+                        debug!("Audit log WebSocket client disconnected");
+                        break;
+                    }
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Closed) => break,
+        }
+    }
+}
+
+/// `GET /api/v1/audit-log/anomalies`
+pub async fn list_audit_anomalies(
+    State(state): State<Arc<ControllerState>>,
+    Query(q): Query<AuditQuery>,
+) -> Result<Json<AuditAnomalyResponse>, (StatusCode, Json<crate::rest_api::dto::ErrorResponse>)> {
+    let limit = q.limit.unwrap_or(100);
+    let items = state.anomaly_detector.list(limit).await;
+    let total = items.len();
+    Ok(Json(AuditAnomalyResponse { items, total }))
 }
 
 #[cfg(test)]

@@ -1,0 +1,1 @@
+pub fn f(c:bool,s6usize,q:usize)->usize{if c{0}else{sncaturating_sub(quorum)}}

@@ -1,0 +1,82 @@
+{
+  "schemas": [
+    {
+      "file": "StellarAIOps-stellar.org-v1alpha1.json",
+      "source": "config/crd/stellaraiops-crd.yaml",
+      "kind": "StellarAIOps",
+      "apiVersion": "stellar.org/v1alpha1"
+    },
+    {
+      "file": "StellarAutoscaler-stellar.org-v1alpha1.json",
+      "source": "config/crd/stellarautoscaler-crd.yaml",
+      "kind": "StellarAutoscaler",
+      "apiVersion": "stellar.org/v1alpha1"
+    },
+    {
+      "file": "StellarBenchmark-stellar.org-v1alpha1.json",
+      "source": "config/crd/stellarbenchmark-crd.yaml",
+      "kind": "StellarBenchmark",
+      "apiVersion": "stellar.org/v1alpha1"
+    },
+    {
+      "file": "BenchmarkReport-stellar.org-v1alpha1.json",
+      "source": "config/crd/stellarbenchmarkreport-crd.yaml",
+      "kind": "BenchmarkReport",
+      "apiVersion": "stellar.org/v1alpha1"
+    },
+    {
+      "file": "StellarBackup-stellar.org-v1alpha1.json",
+      "source": "config/crd/stellardr-crd.yaml",
+      "kind": "StellarBackup",
+      "apiVersion": "stellar.org/v1alpha1"
+    },
+    {
+      "file": "StellarRestore-stellar.org-v1alpha1.json",
+      "source": "config/crd/stellardr-crd.yaml",
+      "kind": "StellarRestore",
+      "apiVersion": "stellar.org/v1alpha1"
+    },
+    {
+      "file": "StellarDRDrill-stellar.org-v1alpha1.json",
+      "source": "config/crd/stellardr-crd.yaml",
+      "kind": "StellarDRDrill",
+      "apiVersion": "stellar.org/v1alpha1"
+    },
+    {
+      "file": "StellarFederation-stellar.org-v1alpha1.json",
+      "source": "config/crd/stellarfederation-crd.yaml",
+      "kind": "StellarFederation",
+      "apiVersion": "stellar.org/v1alpha1"
+    },
+    {
+      "file": "StellarGitOpsConfig-stellar.org-v1alpha1.json",
+      "source": "config/crd/stellargitopsconfig-crd.yaml",
+      "kind": "StellarGitOpsConfig",
+      "apiVersion": "stellar.org/v1alpha1"
+    },
+    {
+      "file": "StellarNode-stellar.org-v1alpha1.json",
+      "source": "config/crd/stellarnode-crd.yaml",
+      "kind": "StellarNode",
+      "apiVersion": "stellar.org/v1alpha1"
+    },
+    {
+      "file": "StellarObservability-stellar.org-v1alpha1.json",
+      "source": "config/crd/stellarobservability-crd.yaml",
+      "kind": "StellarObservability",
+      "apiVersion": "stellar.org/v1alpha1"
+    },
+    {
+      "file": "StellarSecurityPolicy-stellar.org-v1alpha1.json",
+      "source": "config/crd/stellarsecuritypolicy-crd.yaml",
+      "kind": "StellarSecurityPolicy",
+      "apiVersion": "stellar.org/v1alpha1"
+    },
+    {
+      "file": "StellarUpgrade-stellar.org-v1alpha1.json",
+      "source": "config/crd/stellarupgrade-crd.yaml",
+      "kind": "StellarUpgrade",
+      "apiVersion": "stellar.org/v1alpha1"
+    }
+  ]
+}

@@ -13,6 +13,47 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+hooks:
+  preInstall:
+    enabled: false
+  preUpgrade:
+    enabled: false
+    enableRollbackCheck: false
+
+webhook:
+  enabled: false
+
+mtls:
+  enabled: false
+
+certManagement:
+  enabled: false
+
+horizonHpa:
+  enabled: false
+
+rateLimiting:
+  enabled: false
+  distributed:
+    enabled: false
+    failOpen: true
+  redis:
+    address: ""
+    poolSize: 10
+    timeoutMs: 1000
+    tls:
+      enabled: false
+    passwordSecretName: ""
+    passwordSecretKey: "password"
+  tiers: []
+  endpointTiers: {}
+
+prometheus:
+  enabled: false
+
+logShipper:
+  enabled: false
+
 serviceAccount:
   # Specifies whether a service account should be created
   create: true
@@ -124,6 +165,8 @@ operator:
   metricsPort: 9090
   # Namespace to watch (empty = all namespaces)
   watchNamespace: ""
+  profiling:
+    enabled: false
 
 # Diagnostic sidecar configuration
 sidecar:
@@ -210,6 +253,28 @@ featureFlags:
   enableArchiveHealth: true
   enableSorobanMetrics: false
 
+costOptimization:
+  resourceTracking:
+    enabled: false
+    windowSize: "7d"
+    headroomFactor: 1.2
+  spot:
+    enabled: false
+    maxPricePerHourUsd: "0"
+    fallbackToOnDemand: true
+  monthlyBudgetUsd: 0
+
+# Validator key rotation daemon. Disabled by default; when enabled the operator
+# rotates only Validator seed sources backed by supported external Secret Managers.
+keyRotation:
+  enabled: false
+  intervalSecs: 86400
+  validationWindowSecs: 30
+  validationSampleIntervalSecs: 5
+  minAuthenticatedPeers: 1
+  maxUnhealthySamples: 0
+  rollbackOnFailure: true
+  awsRegion: ""
 
 security:
   audit:

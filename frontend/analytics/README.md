@@ -49,11 +49,55 @@ Snapshot nodes use the existing operator fields: `id`, `full_id`, `phase`, `is_c
 
 Node colors indicate health: green is synced, amber is degraded, and red is falling behind or unknown. Click a node to inspect cluster, SCP phase, ballot, TPS, ledger time, and quorum threshold. OrbitControls provides drag-to-orbit, scroll-to-zoom, and pan interaction.
 
+## Resource Saturation Heatmap
+
+`src/heatmap/` adds a real-time CPU/memory saturation heatmap for Kubernetes worker
+nodes. Switch to it with the **Saturation** toggle in the toolbar or open the app
+with `?view=heatmap`.
+
+The grid is a zone-banded, GitHub-contribution-graph layout: one cell per worker
+node, grouped into availability-zone rows, colored on a cool (idle) to hot
+(saturated) ramp. Cells carry `data-node`, `data-zone`, `data-level`, `data-state`,
+and `data-saturation` attributes and a native `<title>` tooltip; hover or focus a
+cell for the CPU/memory/pod breakdown.
+
+The component polls a Prometheus HTTP API endpoint every 5 seconds for
+`stellar_operator_resource_usage` (default `/api/v1/query`, override with
+`?prom=<url>`). It accepts the vector JSON response, a bare `result` array, or the
+`/metrics` text exposition. Per-poll work is O(samples): parsing and
+re-materialization happen off the render path, results are coalesced into a single
+`requestAnimationFrame`, handed to React via `startTransition`, and each cell is a
+memoized `<rect>`, so a 100-node cluster refresh never blocks the main thread.
+
+Edge cases: a worker node that drops out of the scrape is shown dashed
+("draining") and evicted after `staleAfterMs` (15s); a stale scrape dims every
+cell; an endpoint error keeps the last good grid and surfaces a banner.
+
+### Mock 100-node cluster
+
+```bash
+npm run mock:prometheus            # 100 nodes, 3 zones, port 9091
+node scripts/mock-prometheus.mjs --nodes 100 --zones 3 --spike-period 45 --port 9091
+```
+
+The mock simulates a CPU spike that rolls across every availability zone once per
+`--spike-period` seconds and drops one worker node from the series every 20s
+(disable with `--no-drop`). Point the app at it via the Vite dev proxy, e.g.
+`?view=heatmap&prom=/mock-prom/api/v1/query` with a proxy entry, or run the mock on
+the same origin the operator API uses.
+
 ## Checks
 
 ```bash
 npm test
 npm run build
+npm run matrix:perf
 ```
 
-The model tests exercise both snapshot and message ingestion. The browser performance target is validated with the mock harness and browser devtools or a production preview build; the renderer avoids per-edge/per-node React elements and limits device pixel ratio to reduce GPU pressure.
+
+
+```bash
+node scripts/mock-fee-stream.mjs --serve --history-hours 48 --spike-hours 9,21 --interval 1000
+```
+
+Without `--serve` the generator emits newline-delimited JSON to stdout for replay. Live mode reads fee-enriched frames from `/api/v1/quorum/topology/stream`; when a frame carries no fee field, the feed infers a base fee from `tps`. The estimator model (`src/fees/feeModel.js`) and its tests (`npm test`) validate that historical fee spike data moves the congestion level and recommended tiers.

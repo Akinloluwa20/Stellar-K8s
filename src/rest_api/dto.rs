@@ -1,3 +1,15 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 //! Data Transfer Objects for the REST API
 //!
 //! These types are used for API requests and responses.
@@ -39,19 +51,6 @@ pub struct NodeDetailResponse {
     pub created_at: Option<String>,
 }
 
-/// Request to create a node (simplified)
-/// Reserved for future API endpoints
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateNodeRequest {
-    pub name: String,
-    pub namespace: String,
-    pub node_type: NodeType,
-    pub network: StellarNetwork,
-    pub version: String,
-}
-
 /// Health check response
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
@@ -66,18 +65,102 @@ pub struct LeaderResponse {
     pub holder_id: String,
 }
 
-/// Error response
-#[derive(Debug, Serialize)]
+/// Standardised API Error Codes for REST Endpoints (issue #1282)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ApiErrorCode {
+    ErrNotFound,
+    ErrBadRequest,
+    ErrUnauthorized,
+    ErrForbidden,
+    ErrInternalServerError,
+    ErrServiceUnavailable,
+    ErrPartialDegradation,
+    ErrReconcileStalled,
+}
+
+impl ApiErrorCode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ErrNotFound => "ERR_NOT_FOUND",
+            Self::ErrBadRequest => "ERR_BAD_REQUEST",
+            Self::ErrUnauthorized => "ERR_UNAUTHORIZED",
+            Self::ErrForbidden => "ERR_FORBIDDEN",
+            Self::ErrInternalServerError => "ERR_INTERNAL_SERVER_ERROR",
+            Self::ErrServiceUnavailable => "ERR_SERVICE_UNAVAILABLE",
+            Self::ErrPartialDegradation => "ERR_PARTIAL_DEGRADATION",
+            Self::ErrReconcileStalled => "ERR_RECONCILE_STALLED",
+        }
+    }
+
+    /// HTTP status for each error code — ensures consistent mapping across all REST endpoints
+    pub fn http_status(&self) -> axum::http::StatusCode {
+        match self {
+            Self::ErrNotFound => axum::http::StatusCode::NOT_FOUND,
+            Self::ErrBadRequest => axum::http::StatusCode::BAD_REQUEST,
+            Self::ErrUnauthorized => axum::http::StatusCode::UNAUTHORIZED,
+            Self::ErrForbidden => axum::http::StatusCode::FORBIDDEN,
+            Self::ErrInternalServerError => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Self::ErrServiceUnavailable => axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Self::ErrPartialDegradation => axum::http::StatusCode::MULTI_STATUS,
+            Self::ErrReconcileStalled => axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        }
+    }
+}
+
+/// Structured error response for all REST API endpoints
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ErrorResponse {
     pub error: String,
+    pub error_code: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+    pub degraded: bool,
+    pub timestamp: String,
 }
 
 impl ErrorResponse {
     pub fn new(error: &str, message: &str) -> Self {
         Self {
             error: error.to_string(),
+            error_code: "ERR_INTERNAL_SERVER_ERROR".to_string(),
             message: message.to_string(),
+            correlation_id: None,
+            details: None,
+            degraded: false,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+
+    pub fn structured(code: ApiErrorCode, message: &str, correlation_id: Option<String>) -> Self {
+        Self {
+            error: code.as_str().to_lowercase(),
+            error_code: code.as_str().to_string(),
+            message: message.to_string(),
+            correlation_id,
+            details: None,
+            degraded: false,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+
+    pub fn degraded(
+        code: ApiErrorCode,
+        message: &str,
+        details: serde_json::Value,
+        correlation_id: Option<String>,
+    ) -> Self {
+        Self {
+            error: code.as_str().to_lowercase(),
+            error_code: code.as_str().to_string(),
+            message: message.to_string(),
+            correlation_id,
+            details: Some(details),
+            degraded: true,
+            timestamp: chrono::Utc::now().to_rfc3339(),
         }
     }
 }

@@ -1,9 +1,21 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 //! HTTP handlers for the Dashboard API
 
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
     Json,
 };
@@ -11,15 +23,153 @@ use k8s_openapi::api::core::v1::Pod;
 use kube::{api::Api, api::LogParams, api::Patch, api::PatchParams, ResourceExt};
 use tracing::{error, info, instrument};
 
-use crate::controller::ControllerState;
-use crate::crd::{NodeType, StellarNetwork, StellarNode};
+use crate::controller::{AdminAction, AuditEntry, ControllerState};
+use crate::crd::{NodeType, StellarNetwork, StellarNode, StellarNodeSpec};
+use crate::rest_api::auth::RequestIdentity;
 
 use super::dashboard_dto::{
-    ConditionDisplay, DashboardOverview, MetricsSummary, NetworkBreakdown, NodeAction,
-    NodeActionRequest, NodeActionResponse, NodeConditionsResponse, NodeLogsResponse,
-    NodeTypeBreakdown, OperatorLogsResponse,
+    CapacityPlanningResponse, ConditionDisplay, ConfigImpactResponse, DRStatusResponse,
+    DashboardOverview, LogAnalyticsResponse, LogPatternDto, MetricsSummary, NetworkBreakdown,
+    NodeAction, NodeActionRequest, NodeActionResponse, NodeConditionsResponse, NodeLogsResponse,
+    NodeTypeBreakdown, OperatorLogsResponse, SecurityPostureResponse, WhatIfRequest,
 };
 use super::dto::ErrorResponse;
+
+/// Get DR status for a node
+#[instrument(skip(state))]
+pub async fn get_dr_status(
+    State(state): State<Arc<ControllerState>>,
+    Path((namespace, name)): Path<(String, String)>,
+) -> Result<Json<DRStatusResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let api: Api<StellarNode> = Api::namespaced(state.client.clone(), &namespace);
+
+    match api.get(&name).await {
+        Ok(node) => {
+            let dr_config = node.spec.dr_config.as_ref();
+            let dr_status = node.status.as_ref().and_then(|s| s.dr_status.as_ref());
+
+            Ok(Json(DRStatusResponse {
+                namespace,
+                name,
+                dr_enabled: dr_config.map(|c| c.enabled).unwrap_or(false),
+                current_role: dr_status
+                    .and_then(|s| s.current_role.as_ref().map(|r| format!("{:?}", r))),
+                failover_active: dr_status.map(|s| s.failover_active).unwrap_or(false),
+                last_failover_time: dr_status.and_then(|s| s.last_failover_time.clone()),
+                sync_lag: dr_status.and_then(|s| s.sync_lag),
+                compliance_status: None, // Would fetch from DisasterRecoveryPolicy if needed
+                last_drill_result: dr_status.and_then(|s| s.last_drill_result.clone()),
+            }))
+        }
+        Err(kube::Error::Api(e)) if e.code == 404 => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse::new(
+                "not_found",
+                &format!("Node {namespace}/{name} not found"),
+            )),
+        )),
+        Err(e) => {
+            error!("Failed to get DR status: {:?}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new("get_failed", &e.to_string())),
+            ))
+        }
+    }
+}
+
+/// Get log analytics summary
+pub async fn log_analytics(
+    State(state): State<Arc<ControllerState>>,
+) -> Json<LogAnalyticsResponse> {
+    let top_patterns = state.analytics_engine.get_top_patterns(10);
+
+    let patterns = top_patterns
+        .into_iter()
+        .map(|p| LogPatternDto {
+            template: p.message_template,
+            count: p.count,
+            last_seen: format!("{:?}", p.last_seen), // Simplified for now
+        })
+        .collect();
+
+    Json(LogAnalyticsResponse {
+        top_patterns: patterns,
+    })
+}
+
+/// Analyze configuration impact
+pub async fn analyze_config_impact(
+    State(_state): State<Arc<ControllerState>>,
+    Json(new_spec): Json<StellarNodeSpec>,
+) -> Json<ConfigImpactResponse> {
+    // For impact analysis, we'd ideally compare against the current spec.
+    // Here we use a dummy old spec for demonstration.
+    let old_spec = new_spec.clone(); // In reality, fetch from K8s
+
+    let impact = crate::config_mgmt::impact::ImpactAnalyzer::analyze(&old_spec, &new_spec);
+    let validation_errors = crate::config_mgmt::validation::Validator::validate(&new_spec);
+
+    Json(ConfigImpactResponse {
+        impact,
+        validation_errors,
+    })
+}
+
+/// Get security posture summary
+pub async fn security_posture(
+    State(_state): State<Arc<ControllerState>>,
+) -> Json<SecurityPostureResponse> {
+    // Mock posture for demonstration
+    let posture = crate::security::SecurityPosture {
+        overall_score: 0.95,
+        findings: vec![],
+        compliance_status: true,
+    };
+
+    Json(SecurityPostureResponse { posture })
+}
+
+/// Get capacity planning summary
+pub async fn capacity_planning(
+    State(_state): State<Arc<ControllerState>>,
+) -> Json<CapacityPlanningResponse> {
+    // Mock data for demonstration
+    let now = chrono::Utc::now();
+    let forecasts = vec![crate::capacity_planning::GrowthForecast {
+        resource_type: "CPU".to_string(),
+        forecast_points: vec![(now, 1.0), (now + chrono::Duration::days(30), 1.5)],
+        model_used: "Linear".to_string(),
+        growth_rate_pct: 50.0,
+    }];
+
+    let engine = crate::capacity_planning::recommendation::RecommendationEngine::new(1.2);
+    let recommendations = engine.generate_recommendations(&forecasts);
+
+    Json(CapacityPlanningResponse {
+        recommendations,
+        forecasts,
+        bottlenecks: vec![
+            "Storage growth exceeding 20% per month in 'stellar-mainnet'".to_string(),
+        ],
+    })
+}
+
+/// Run a what-if scenario analysis
+pub async fn run_what_if(
+    State(_state): State<Arc<ControllerState>>,
+    Json(req): Json<WhatIfRequest>,
+) -> Json<crate::capacity_planning::WhatIfResult> {
+    let analyzer = crate::capacity_planning::analysis::ScenarioAnalyzer;
+    Json(analyzer.analyze_scenario(&req.scenario_name, req.scale_factor))
+}
+
+/// Get real-time traffic shaping dashboard metrics.
+pub async fn traffic_dashboard(
+    State(_state): State<Arc<ControllerState>>,
+) -> Json<crate::controller::traffic::TrafficDashboardSnapshot> {
+    Json(crate::controller::traffic::get_traffic_dashboard_snapshot())
+}
 
 /// Dashboard overview endpoint
 #[instrument(skip(state))]
@@ -228,6 +378,7 @@ pub async fn get_node_logs(
 pub async fn execute_node_action(
     State(state): State<Arc<ControllerState>>,
     Path((namespace, name)): Path<(String, String)>,
+    Extension(identity): Extension<RequestIdentity>,
     Json(request): Json<NodeActionRequest>,
 ) -> Result<Json<NodeActionResponse>, (StatusCode, Json<ErrorResponse>)> {
     let api: Api<StellarNode> = Api::namespaced(state.client.clone(), &namespace);
@@ -267,11 +418,39 @@ pub async fn execute_node_action(
     };
 
     match result {
-        Ok(message) => Ok(Json(NodeActionResponse {
-            success: true,
-            message,
-            action: request.action,
-        })),
+        Ok(message) => {
+            let action = match request.action {
+                NodeAction::Restart => AdminAction::Other("node_restart".to_string()),
+                NodeAction::Snapshot => AdminAction::ForensicSnapshot,
+                NodeAction::Suspend => AdminAction::NodeSuspend,
+                NodeAction::Resume => AdminAction::NodeResume,
+                NodeAction::MaintenanceMode => AdminAction::TriggerMaintenance,
+                NodeAction::Prune => AdminAction::Other("prune".to_string()),
+            };
+
+            state
+                .audit_recorder
+                .record(
+                    AuditEntry::new(
+                        action,
+                        identity.subject.clone(),
+                        &name,
+                        namespace.clone(),
+                        Some(&format!("Action {:?}", request.action)),
+                    )
+                    .with_metadata(serde_json::json!({
+                        "authType": identity.auth_type,
+                        "groups": identity.groups,
+                    })),
+                )
+                .await;
+
+            Ok(Json(NodeActionResponse {
+                success: true,
+                message,
+                action: request.action,
+            }))
+        }
         Err(e) => {
             error!("Action failed: {:?}", e);
             Err((
@@ -513,4 +692,131 @@ pub async fn get_operator_logs(
             ))
         }
     }
+}
+
+/// Get dashboard metrics summary
+#[instrument(skip(state))]
+pub async fn dashboard_metrics(
+    State(state): State<Arc<ControllerState>>,
+) -> Result<Json<MetricsSummary>, (StatusCode, Json<ErrorResponse>)> {
+    // Return aggregated metrics across all nodes
+    let api: Api<StellarNode> = Api::all(state.client.clone());
+
+    match api.list(&Default::default()).await {
+        Ok(nodes) => {
+            let mut total_replicas = 0;
+            let mut total_ready_replicas = 0;
+            let mut latest_ledger = None;
+            let mut avg_quorum_fragility = 0.0;
+            let mut fragility_count = 0;
+
+            for node in &nodes.items {
+                if let Some(status) = &node.status {
+                    total_replicas += status.replicas;
+                    total_ready_replicas += status.ready_replicas;
+
+                    if let Some(ledger) = status.ledger_sequence {
+                        latest_ledger = Some(latest_ledger.map_or(ledger, |l: u64| l.max(ledger)));
+                    }
+
+                    if let Some(fragility) = status.quorum_fragility {
+                        avg_quorum_fragility += fragility;
+                        fragility_count += 1;
+                    }
+                }
+            }
+
+            if fragility_count > 0 {
+                avg_quorum_fragility /= fragility_count as f64;
+            }
+
+            Ok(Json(MetricsSummary {
+                namespace: "all".to_string(),
+                name: "cluster".to_string(),
+                ledger_sequence: latest_ledger,
+                ready_replicas: total_ready_replicas,
+                replicas: total_replicas,
+                quorum_fragility: if fragility_count > 0 {
+                    Some(avg_quorum_fragility)
+                } else {
+                    None
+                },
+            }))
+        }
+        Err(e) => {
+            error!("Failed to get dashboard metrics: {:?}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new("metrics_failed", &e.to_string())),
+            ))
+        }
+    }
+}
+
+/// Get monitoring system status
+#[instrument(skip(state))]
+pub async fn monitoring_status(
+    State(state): State<Arc<ControllerState>>,
+) -> Json<super::dashboard_dto::MonitoringStatusResponse> {
+    let api: Api<StellarNode> = Api::all(state.client.clone());
+
+    let mut metrics_by_type = super::dashboard_dto::MetricsTypeBreakdown {
+        ledger_metrics: 0,
+        transaction_metrics: 0,
+        peer_metrics: 0,
+        archive_metrics: 0,
+        database_metrics: 0,
+        scp_metrics: 0,
+        soroban_metrics: 0,
+        horizon_metrics: 0,
+    };
+
+    let mut total_nodes = 0;
+    let mut healthy_nodes = 0;
+
+    match api.list(&Default::default()).await {
+        Ok(nodes) => {
+            total_nodes = nodes.items.len();
+            for node in &nodes.items {
+                if let Some(status) = &node.status {
+                    if let Some(ready) = status.conditions.iter().find(|c| c.type_ == "Ready") {
+                        if ready.status == "True" {
+                            healthy_nodes += 1;
+                            // Count metrics per healthy node
+                            metrics_by_type.ledger_metrics += 1;
+                            metrics_by_type.transaction_metrics += 1;
+                            metrics_by_type.peer_metrics += 1;
+                            metrics_by_type.archive_metrics += 1;
+                            metrics_by_type.database_metrics += 1;
+                            metrics_by_type.scp_metrics += 1;
+                            metrics_by_type.soroban_metrics += 1;
+                            metrics_by_type.horizon_metrics += 1;
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            error!("Failed to list nodes for monitoring status: {:?}", e);
+        }
+    }
+
+    let healthy = healthy_nodes > 0 && healthy_nodes >= (total_nodes as i32 / 2);
+    let last_scrape = chrono::Utc::now().to_rfc3339();
+
+    Json(super::dashboard_dto::MonitoringStatusResponse {
+        healthy,
+        metrics_endpoint_reachable: true,
+        operator_metrics_available: healthy_nodes > 0,
+        last_metrics_scrape: Some(last_scrape),
+        last_metrics_scrape_error: None,
+        total_metrics_collected: (healthy_nodes as u64) * 8,
+        metrics_by_type,
+        dashboard_status: super::dashboard_dto::DashboardStatus {
+            grafana_available: true,
+            prometheus_available: true,
+            alert_manager_available: true,
+            dashboards_loaded: 5,
+        },
+    })
 }

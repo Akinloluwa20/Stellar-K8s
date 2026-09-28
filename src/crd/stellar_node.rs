@@ -1,24 +1,29 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 //! StellarNode Custom Resource Definition
 //!
 //! The StellarNode CRD represents a managed Stellar infrastructure node.
 //! Supports Validator (Core), Horizon API, and Soroban RPC node types.
 
+use k8s_openapi::api::core::v1::{Volume, VolumeMount};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 
-use super::types::{
-    AutoscalingConfig, CertManagerConfig, Condition, CoreSyncState, CrossClusterConfig,
-    DisasterRecoveryConfig, DisasterRecoveryStatus, ExternalDatabaseConfig, ForensicSnapshotConfig,
-    GasAutoscalingConfig, GlobalDiscoveryConfig, HistoryMode, HorizonConfig, IngressConfig,
-    LabelPropagationConfig, LoadBalancerConfig, LogShipperConfig, ManagedDatabaseConfig,
-    NetworkPolicyConfig, NodeType, OciSnapshotConfig, PlacementConfig, PodAntiAffinityStrength,
-    ProbeConfig, ResourceRequirements, RestoreFromSnapshotConfig, RetentionPolicy, RolloutStrategy,
-    SnapshotScheduleConfig, SorobanConfig, StellarNetwork, StorageConfig, SyncStateScalingConfig,
-    ValidatorConfig, VpaConfig,
-};
+
 
 /// Structured validation error for `StellarNodeSpec`
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,6 +72,15 @@ pub struct StellarNodeSpec {
     /// Custom network passphrase (required if network is 'Custom').
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_network_passphrase: Option<String>,
+
+    /// Reference to a Kubernetes Secret containing the network passphrase.
+    /// When set, the operator watches this secret and triggers graceful rolling
+    /// restarts when the secret is rotated. The secret must have a key named
+    /// `NETWORK_PASSPHRASE`.
+    ///
+    /// This takes precedence over `custom_network_passphrase` when both are set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub passphrase_secret_ref: Option<String>,
 
     /// Version of the Stellar software to run (e.g., "v21.0.0").
     pub version: String,
@@ -149,6 +163,24 @@ pub struct StellarNodeSpec {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load_balancer: Option<LoadBalancerConfig>,
 
+    /// Custom labels to apply to all Services created for this StellarNode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_labels: Option<BTreeMap<String, String>>,
+
+    /// Custom annotations to apply to all Services created for this StellarNode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_annotations: Option<BTreeMap<String, String>>,
+
+    /// Custom pod volumes available to the main Stellar container and init containers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub volumes: Option<Vec<Volume>>,
+
+    /// Custom volume mounts for the main Stellar container.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub volume_mounts: Option<Vec<VolumeMount>>,
+
     /// Global discovery configuration for cross-cluster discovery
     #[serde(skip_serializing_if = "Option::is_none")]
     pub global_discovery: Option<GlobalDiscoveryConfig>,
@@ -157,7 +189,8 @@ pub struct StellarNodeSpec {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cross_cluster: Option<CrossClusterConfig>,
 
-    /// Rollout strategy for updates (RollingUpdate or Canary)
+    /// Rollout strategy for updates (RollingUpdate, Canary, or BlueGreen).
+    /// Validators support RollingUpdate and BlueGreen; Canary is rejected.
     #[serde(default)]
     pub strategy: RolloutStrategy,
 
@@ -187,6 +220,22 @@ pub struct StellarNodeSpec {
     #[serde(default)]
     pub placement: PlacementConfig,
 
+    /// Custom node affinity for pod scheduling.
+    ///
+    /// This is applied at the pod level and can be used to pin workloads to
+    /// specific node pools, hardware classes, or zones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "super::schema_utils::object_schema")]
+    pub node_affinity: Option<k8s_openapi::api::core::v1::NodeAffinity>,
+
+    /// Custom tolerations applied to pods created for this StellarNode.
+    ///
+    /// Useful when target node pools use taints and workloads need explicit
+    /// tolerations to be schedulable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(schema_with = "super::schema_utils::array_of_objects_schema")]
+    pub tolerations: Vec<k8s_openapi::api::core::v1::Toleration>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "super::schema_utils::array_of_objects_schema")]
     pub topology_spread_constraints:
@@ -201,6 +250,11 @@ pub struct StellarNodeSpec {
     /// Enables zero-downtime backups and creating new nodes from snapshots.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot_schedule: Option<SnapshotScheduleConfig>,
+
+    /// Pre-upgrade backup configuration for Validator PVC snapshots.
+    /// When set, the operator snapshots the PVC before applying a new version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup_config: Option<BackupConfig>,
 
     /// Bootstrap this node from an existing VolumeSnapshot instead of an empty volume (Validator only).
     /// The PVC will be created from the specified snapshot for near-instant startup.
@@ -280,6 +334,70 @@ pub struct StellarNodeSpec {
     #[schemars(with = "Option<Vec<serde_json::Value>>")]
     pub sidecars: Option<Vec<k8s_openapi::api::core::v1::Container>>,
 
+    /// Resource requests and limits for the operator-managed diagnostic health-check sidecar.
+    ///
+    /// Defaults to 50m CPU and 64Mi memory for both requests and limits when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic_sidecar_resources: Option<ResourceRequirements>,
+
+    /// Optional init containers to run before the main Stellar container starts.
+    ///
+    /// These run to completion in order before the main container starts.
+    /// Useful for tasks like fetching custom configuration, restoring state,
+    /// or pre-populating volumes.
+    ///
+    /// # Example
+    /// ```yaml
+    /// initContainers:
+    ///   - name: fetch-config
+    ///     image: curlimages/curl:latest
+    ///     command: ["sh", "-c", "curl -o /data/custom.cfg https://config.example.com/stellar.cfg"]
+    ///     volumeMounts:
+    ///       - name: data
+    ///         mountPath: /data
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<Vec<serde_json::Value>>")]
+    pub init_containers: Option<Vec<k8s_openapi::api::core::v1::Container>>,
+
+    /// Optional pod-level and container-level security context overrides.
+    ///
+    /// When unset the operator applies secure defaults compliant with the
+    /// Kubernetes Pod Security Standards `restricted` profile:
+    /// - `runAsNonRoot: true`
+    /// - `readOnlyRootFilesystem: true`
+    /// - `allowPrivilegeEscalation: false`
+    /// - `capabilities.drop: ["ALL"]`
+    /// - `seccompProfile.type: RuntimeDefault`
+    ///
+    /// # Example — restricted (default)
+    /// ```yaml
+    /// securityContext:
+    ///   runAsNonRoot: true
+    ///   readOnlyRootFilesystem: true
+    ///   allowPrivilegeEscalation: false
+    ///   capabilities:
+    ///     drop: ["ALL"]
+    ///   seccompProfile:
+    ///     type: RuntimeDefault
+    /// ```
+    ///
+    /// # Example — baseline (loosened for legacy images)
+    /// ```yaml
+    /// securityContext:
+    ///   runAsNonRoot: true
+    ///   allowPrivilegeEscalation: false
+    ///   readOnlyRootFilesystem: false
+    /// ```
+    ///
+    /// # Example — privileged (use only in dev/test namespaces)
+    /// ```yaml
+    /// securityContext:
+    ///   privileged: true
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security_context: Option<super::types::StellarSecurityContext>,
+
     /// Optional overrides for the liveness, readiness, and startup probes on the main container.
     ///
     /// When set, the specified fields replace the operator's built-in probe defaults.
@@ -298,6 +416,19 @@ pub struct StellarNodeSpec {
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probes: Option<ProbeConfig>,
+
+    /// Additional environment variables injected into Validator (Stellar Core)
+    /// container instances.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(schema_with = "super::schema_utils::array_of_objects_schema")]
+    pub stellar_core_env: Vec<k8s_openapi::api::core::v1::EnvVar>,
+
+    /// Additional environment variables injected into Horizon container
+    /// instances.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(schema_with = "super::schema_utils::array_of_objects_schema")]
+    pub horizon_env: Vec<k8s_openapi::api::core::v1::EnvVar>,
+
     /// Cross-cloud failover configuration for Horizon clusters.
     /// Enables seamless traffic failover between cloud providers (AWS, GCP, Azure)
     /// during major provider outages.
@@ -348,6 +479,39 @@ pub struct StellarNodeSpec {
     /// Only applicable to `Validator` nodes with history archives enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pruning_policy: Option<super::types::PruningPolicy>,
+
+    /// RBAC configuration for operator-level permissions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rbac: Option<RbacConfig>,
+
+    /// Audit logging configuration for operator actions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audit: Option<AuditConfig>,
+
+    /// Policy-based authorization configuration (OPA).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy: Option<PolicyConfig>,
+
+    /// PriorityClass name to assign to all pods managed by this StellarNode.
+    ///
+    /// Controls scheduling priority and preemption behaviour in resource-constrained
+    /// clusters. The referenced PriorityClass must already exist in the cluster.
+    ///
+    /// Recommended values:
+    /// - `stellar-validator-critical` – highest priority, for mainnet validators
+    /// - `stellar-rpc-high`           – high priority, for Soroban RPC nodes
+    /// - `stellar-default`            – standard priority, for Horizon / testnet
+    ///
+    /// # Example
+    /// ```yaml
+    /// priorityClassName: stellar-validator-critical
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority_class_name: Option<String>,
+}
+
+fn default_network_policy() -> Option<NetworkPolicyConfig> {
+    Some(Default::default())
 }
 
 fn default_replicas() -> i32 {
@@ -378,19 +542,26 @@ impl Default for StellarNodeSpec {
             vpa_config: None,
             ingress: None,
             load_balancer: None,
+            service_labels: None,
+            service_annotations: None,
+            volumes: None,
+            volume_mounts: None,
             global_discovery: None,
             cross_cluster: None,
             strategy: Default::default(),
             maintenance_mode: false,
             proximity_aware: false,
-            network_policy: None,
+            network_policy: default_network_policy(),
             dr_config: None,
             replication_config: None,
             pod_anti_affinity: Default::default(),
             placement: Default::default(),
+            node_affinity: None,
+            tolerations: Vec::new(),
             topology_spread_constraints: None,
             cve_handling: None,
             snapshot_schedule: None,
+            backup_config: None,
             restore_from_snapshot: None,
             read_replica_config: None,
             db_maintenance_config: None,
@@ -401,9 +572,14 @@ impl Default for StellarNodeSpec {
             label_propagation: None,
             resource_meta: None,
             custom_network_passphrase: None,
+            passphrase_secret_ref: None,
             sidecars: None,
+            diagnostic_sidecar_resources: None,
+            init_containers: None,
             cert_manager: None,
             probes: None,
+            stellar_core_env: Vec::new(),
+            horizon_env: Vec::new(),
             cross_cloud_failover: None,
             hitless_upgrade: None,
             ebpf_config: None,
@@ -412,6 +588,11 @@ impl Default for StellarNodeSpec {
             log_shipper: None,
             sync_state_scaling: None,
             pruning_policy: None,
+            rbac: None,
+            audit: None,
+            policy: None,
+            priority_class_name: None,
+            security_context: None,
         }
     }
 }
@@ -525,6 +706,81 @@ impl StellarNodeSpec {
             }
         }
 
+        // 2c. Custom pod volume validation
+        if let Some(ref volumes) = self.volumes {
+            let mut seen = BTreeSet::new();
+            for volume in volumes {
+                if volume.name.is_empty() {
+                    errors.push(SpecValidationError::new(
+                        "spec.volumes[].name",
+                        "Volume name must not be empty",
+                        "Give each custom volume a non-empty name. Example: name: custom-config",
+                    ));
+                } else if !seen.insert(volume.name.clone()) {
+                    errors.push(SpecValidationError::new(
+                        "spec.volumes[].name",
+                        format!("Duplicate volume name '{}' in spec.volumes", volume.name),
+                        "Give each custom volume a unique name.",
+                    ));
+                }
+
+                if [
+                    "data",
+                    "config",
+                    "tls",
+                    "keys",
+                    "cloudhsm-socket",
+                    "dedicatedhsm-socket",
+                    "soroban-cache",
+                ]
+                .contains(&volume.name.as_str())
+                {
+                    errors.push(SpecValidationError::new(
+                        "spec.volumes[].name",
+                        format!("Volume name '{}' conflicts with an operator-managed pod volume", volume.name),
+                        "Use a different custom volume name to avoid conflicting with built-in operator volumes.",
+                    ));
+                }
+            }
+        }
+
+        let custom_volume_names: BTreeSet<String> = self
+            .volumes
+            .as_ref()
+            .map(|volumes| volumes.iter().map(|v| v.name.clone()).collect())
+            .unwrap_or_default();
+
+        if let Some(ref volume_mounts) = self.volume_mounts {
+            let mut seen = BTreeSet::new();
+            for mount in volume_mounts {
+                if mount.name.is_empty() {
+                    errors.push(SpecValidationError::new(
+                        "spec.volumeMounts[].name",
+                        "Volume mount name must not be empty",
+                        "Give each custom volume mount a non-empty name. Example: name: custom-config",
+                    ));
+                } else if !seen.insert(mount.name.clone()) {
+                    errors.push(SpecValidationError::new(
+                        "spec.volumeMounts[].name",
+                        format!(
+                            "Duplicate volumeMount name '{}' in spec.volumeMounts",
+                            mount.name
+                        ),
+                        "Give each custom volume mount a unique name.",
+                    ));
+                } else if !custom_volume_names.contains(&mount.name) {
+                    errors.push(SpecValidationError::new(
+                        "spec.volumeMounts[].name",
+                        format!(
+                            "Volume mount '{}' does not reference a declared custom volume",
+                            mount.name
+                        ),
+                        "Define the referenced custom volume in spec.volumes or remove the volume mount.",
+                    ));
+                }
+            }
+        }
+
         // 2c. Replication validation
         if let Some(ref repl_cfg) = self.replication_config {
             if repl_cfg.enabled {
@@ -596,12 +852,16 @@ impl StellarNodeSpec {
                         "Remove spec.ingress for Validator nodes; expose Validator nodes using peer discovery or other supported mechanisms.",
                     ));
                 }
-                // Canary strategy not supported
-                if self.strategy.canary().is_some() {
+                // Canary strategy not supported for Validators (BlueGreen is allowed).
+                if matches!(
+                    self.strategy.strategy_type,
+                    crate::crd::types::RolloutStrategyType::Canary
+                ) || self.strategy.canary().is_some()
+                {
                     errors.push(SpecValidationError::new(
                         "spec.strategy",
                         "canary rollout strategy is not supported for Validator nodes",
-                        "Use RollingUpdate strategy for Validator nodes; canary is only supported for Horizon and SorobanRpc.",
+                        "Use RollingUpdate or BlueGreen for Validator nodes; canary is only supported for Horizon and SorobanRpc.",
                     ));
                 }
 
@@ -648,8 +908,10 @@ impl StellarNodeSpec {
                         }
                     }
                 }
-                // Snapshot schedule and restore only apply to Validators (ledger data)
-                if (self.snapshot_schedule.is_some() || self.restore_from_snapshot.is_some())
+                // Snapshot schedule, pre-upgrade backups, and restore only apply to Validators (ledger data)
+                if (self.snapshot_schedule.is_some()
+                    || self.backup_config.is_some()
+                    || self.restore_from_snapshot.is_some())
                     && self
                         .restore_from_snapshot
                         .as_ref()
@@ -662,13 +924,30 @@ impl StellarNodeSpec {
                         "Set spec.restoreFromSnapshot.volumeSnapshotName to an existing VolumeSnapshot name.",
                     ));
                 }
+                if let Some(backup_config) = &self.backup_config {
+                    if backup_config
+                        .volume_snapshot_class_name
+                        .as_deref()
+                        .map(|v| v.is_empty())
+                        .unwrap_or(false)
+                    {
+                        errors.push(SpecValidationError::new(
+                            "spec.backupConfig.volumeSnapshotClassName",
+                            "volumeSnapshotClassName must not be empty when set",
+                            "Provide a valid CSI VolumeSnapshotClass name or leave the field unset to use the default class.",
+                        ));
+                    }
+                }
             }
             NodeType::Horizon => {
-                if self.snapshot_schedule.is_some() || self.restore_from_snapshot.is_some() {
+                if self.snapshot_schedule.is_some()
+                    || self.backup_config.is_some()
+                    || self.restore_from_snapshot.is_some()
+                {
                     errors.push(SpecValidationError::new(
-                        "spec.snapshotSchedule / spec.restoreFromSnapshot",
-                        "snapshot and restore are only supported for Validator nodes",
-                        "Remove spec.snapshotSchedule and spec.restoreFromSnapshot for Horizon nodes.",
+                        "spec.snapshotSchedule / spec.backupConfig / spec.restoreFromSnapshot",
+                        "snapshot, pre-upgrade backup, and restore are only supported for Validator nodes",
+                        "Remove spec.snapshotSchedule, spec.backupConfig, and spec.restoreFromSnapshot for Horizon nodes.",
                     ));
                 }
                 // Horizon config required
@@ -709,11 +988,14 @@ impl StellarNodeSpec {
                 }
             }
             NodeType::SorobanRpc => {
-                if self.snapshot_schedule.is_some() || self.restore_from_snapshot.is_some() {
+                if self.snapshot_schedule.is_some()
+                    || self.backup_config.is_some()
+                    || self.restore_from_snapshot.is_some()
+                {
                     errors.push(SpecValidationError::new(
-                        "spec.snapshotSchedule / spec.restoreFromSnapshot",
-                        "snapshot and restore are only supported for Validator nodes",
-                        "Remove spec.snapshotSchedule and spec.restoreFromSnapshot for SorobanRpc nodes.",
+                        "spec.snapshotSchedule / spec.backupConfig / spec.restoreFromSnapshot",
+                        "snapshot, pre-upgrade backup, and restore are only supported for Validator nodes",
+                        "Remove spec.snapshotSchedule, spec.backupConfig, and spec.restoreFromSnapshot for SorobanRpc nodes.",
                     ));
                 }
                 // Soroban config required
@@ -756,6 +1038,9 @@ impl StellarNodeSpec {
                     }
                     if let Some(ref gas) = autoscaling.gas_autoscaling {
                         validate_gas_autoscaling(gas, &mut errors);
+                    }
+                    if let Some(ref queue) = autoscaling.queue_autoscaling {
+                        validate_queue_autoscaling(queue, &mut errors);
                     }
                 }
                 if let Some(ingress) = &self.ingress {
@@ -805,6 +1090,17 @@ impl StellarNodeSpec {
                     "spec.probes",
                     msg,
                     "Ensure all probe fields are positive integers (initialDelaySeconds >= 0, others >= 1).",
+                ));
+            }
+        }
+
+        // 6. PriorityClass name validation
+        if let Some(ref pcn) = self.priority_class_name {
+            if pcn.is_empty() {
+                errors.push(SpecValidationError::new(
+                    "spec.priorityClassName",
+                    "priorityClassName must not be empty when set",
+                    "Provide a valid PriorityClass name or remove the field entirely.",
                 ));
             }
         }
@@ -861,7 +1157,50 @@ fn validate_gas_autoscaling(gas: &GasAutoscalingConfig, errors: &mut Vec<SpecVal
     }
 }
 
-#[allow(dead_code)]
+fn validate_queue_autoscaling(
+    queue: &QueueAutoscalingConfig,
+    errors: &mut Vec<SpecValidationError>,
+) {
+    if !queue.enabled {
+        return;
+    }
+    if queue.min_replicas < 1 {
+        errors.push(SpecValidationError::new(
+            "spec.autoscaling.queueAutoscaling.minReplicas",
+            "queueAutoscaling.minReplicas must be at least 1",
+            "Set spec.autoscaling.queueAutoscaling.minReplicas to 1 or greater.",
+        ));
+    }
+    if queue.max_replicas < queue.min_replicas {
+        errors.push(SpecValidationError::new(
+            "spec.autoscaling.queueAutoscaling.maxReplicas",
+            "queueAutoscaling.maxReplicas must be >= minReplicas",
+            "Set spec.autoscaling.queueAutoscaling.maxReplicas to be greater than or equal to minReplicas.",
+        ));
+    }
+    if queue.target_pending_per_replica == 0 {
+        errors.push(SpecValidationError::new(
+            "spec.autoscaling.queueAutoscaling.targetPendingPerReplica",
+            "queueAutoscaling.targetPendingPerReplica must be greater than 0",
+            "Set spec.autoscaling.queueAutoscaling.targetPendingPerReplica to a positive request count.",
+        ));
+    }
+    if queue.metric_name.trim().is_empty() {
+        errors.push(SpecValidationError::new(
+            "spec.autoscaling.queueAutoscaling.metricName",
+            "queueAutoscaling.metricName must not be empty",
+            "Set spec.autoscaling.queueAutoscaling.metricName to the Prometheus gauge name to poll.",
+        ));
+    }
+    if queue.poll_interval_seconds == 0 {
+        errors.push(SpecValidationError::new(
+            "spec.autoscaling.queueAutoscaling.pollIntervalSeconds",
+            "queueAutoscaling.pollIntervalSeconds must be greater than 0",
+            "Set spec.autoscaling.queueAutoscaling.pollIntervalSeconds to a positive polling interval.",
+        ));
+    }
+}
+
 fn validate_ingress(ingress: &IngressConfig, errors: &mut Vec<SpecValidationError>) {
     if ingress.hosts.is_empty() {
         errors.push(SpecValidationError::new(
@@ -909,9 +1248,39 @@ fn validate_ingress(ingress: &IngressConfig, errors: &mut Vec<SpecValidationErro
             }
         }
     }
+
+    if let Some(rl) = &ingress.rate_limit {
+        if rl.requests_per_second == Some(0) {
+            errors.push(SpecValidationError::new(
+                "spec.ingress.rateLimit.requestsPerSecond",
+                "ingress.rateLimit.requestsPerSecond must be greater than 0",
+                "Set spec.ingress.rateLimit.requestsPerSecond to a positive integer.",
+            ));
+        }
+        if rl.requests_per_minute == Some(0) {
+            errors.push(SpecValidationError::new(
+                "spec.ingress.rateLimit.requestsPerMinute",
+                "ingress.rateLimit.requestsPerMinute must be greater than 0",
+                "Set spec.ingress.rateLimit.requestsPerMinute to a positive integer.",
+            ));
+        }
+        if rl.connections == Some(0) {
+            errors.push(SpecValidationError::new(
+                "spec.ingress.rateLimit.connections",
+                "ingress.rateLimit.connections must be greater than 0",
+                "Set spec.ingress.rateLimit.connections to a positive integer.",
+            ));
+        }
+        if rl.burst_multiplier == Some(0) {
+            errors.push(SpecValidationError::new(
+                "spec.ingress.rateLimit.burstMultiplier",
+                "ingress.rateLimit.burstMultiplier must be greater than 0",
+                "Set spec.ingress.rateLimit.burstMultiplier to a positive integer.",
+            ));
+        }
+    }
 }
 
-#[allow(dead_code)]
 fn validate_load_balancer(lb: &LoadBalancerConfig, errors: &mut Vec<SpecValidationError>) {
     use super::types::LoadBalancerMode;
 
@@ -971,7 +1340,6 @@ fn validate_load_balancer(lb: &LoadBalancerConfig, errors: &mut Vec<SpecValidati
     }
 }
 
-#[allow(dead_code)]
 fn validate_global_discovery(gd: &GlobalDiscoveryConfig, errors: &mut Vec<SpecValidationError>) {
     if !gd.enabled {
         return;
@@ -996,7 +1364,6 @@ fn validate_global_discovery(gd: &GlobalDiscoveryConfig, errors: &mut Vec<SpecVa
     }
 }
 
-#[allow(dead_code)]
 fn validate_cross_cluster(cc: &CrossClusterConfig, errors: &mut Vec<SpecValidationError>) {
     use super::types::{CrossClusterMeshType, CrossClusterMode};
 
@@ -1069,6 +1436,22 @@ fn validate_cross_cluster(cc: &CrossClusterConfig, errors: &mut Vec<SpecValidati
                     ),
                     "crossCluster.peerClusters[].latencyThresholdMs must be greater than 0",
                     "Set spec.crossCluster.peerClusters[].latencyThresholdMs to a value greater than 0.",
+                ));
+            }
+        }
+
+        if let Some(fed) = &cc.federation {
+            if fed.enabled
+                && peer
+                    .kubeconfig_secret_ref
+                    .as_deref()
+                    .unwrap_or("")
+                    .is_empty()
+            {
+                errors.push(SpecValidationError::new(
+                    format!("spec.crossCluster.peerClusters[{i}].kubeconfigSecretRef"),
+                    "crossCluster.peerClusters[].kubeconfigSecretRef is required for federation",
+                    "Set spec.crossCluster.peerClusters[].kubeconfigSecretRef when crossCluster.federation.enabled is true.",
                 ));
             }
         }
@@ -1361,6 +1744,42 @@ pub struct StellarNodeStatus {
     /// Status of the history archive pruning process.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pruning_status: Option<super::types::PruningStatus>,
+
+    /// Observed resource version of the passphrase secret (for rotation detection).
+    /// When this differs from the current secret's resourceVersion, the operator
+    /// triggers a graceful rolling restart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_passphrase_secret_version: Option<String>,
+
+    /// Observed resource version of the validator seed secret (for rotation detection).
+    /// When this differs from the current secret's resourceVersion, the operator
+    /// triggers a graceful rolling restart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_seed_secret_version: Option<String>,
+
+    /// Timestamp of the last secret rotation (RFC3339).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_secret_rotation_time: Option<String>,
+
+    /// Validator blue/green rollout phase (e.g. `BlueActive`, `WaitingForGreen`, `GreenActive`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blue_green_phase: Option<String>,
+
+    /// Active deployment color for Validator blue/green (`blue` or `green`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blue_green_active_color: Option<String>,
+
+    /// Human-readable message for the current Validator blue/green rollout.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blue_green_message: Option<String>,
+
+    /// Target Core version for an in-progress Validator blue/green rollout.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blue_green_target_version: Option<String>,
+
+    /// VolumeSnapshot used to seed the green Validator PVC (if any).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blue_green_snapshot_name: Option<String>,
 }
 
 /// BGP advertisement status information
@@ -1582,6 +2001,49 @@ mod tests {
                     check_interval_seconds: 300,
                     ..Default::default()
                 }),
+                blue_green: None,
+            },
+            ..Default::default()
+        };
+
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn test_validator_with_blue_green_should_pass() {
+        let spec = StellarNodeSpec {
+            node_type: NodeType::Validator,
+            network: StellarNetwork::Testnet,
+            version: "v21.0.0".to_string(),
+            validator_config: Some(ValidatorConfig {
+                seed_secret_ref: "test".to_string(),
+                ..Default::default()
+            }),
+            strategy: RolloutStrategy {
+                strategy_type: crate::crd::types::RolloutStrategyType::BlueGreen,
+                canary: None,
+                blue_green: Some(crate::crd::types::BlueGreenStrategyConfig::default()),
+            },
+            ..Default::default()
+        };
+
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validator_canary_type_without_config_should_fail() {
+        let spec = StellarNodeSpec {
+            node_type: NodeType::Validator,
+            network: StellarNetwork::Testnet,
+            version: "v21.0.0".to_string(),
+            validator_config: Some(ValidatorConfig {
+                seed_secret_ref: "test".to_string(),
+                ..Default::default()
+            }),
+            strategy: RolloutStrategy {
+                strategy_type: crate::crd::types::RolloutStrategyType::Canary,
+                canary: None,
+                blue_green: None,
             },
             ..Default::default()
         };
@@ -1609,6 +2071,7 @@ mod tests {
                     check_interval_seconds: 300,
                     ..Default::default()
                 }),
+                blue_green: None,
             },
             ..Default::default()
         };

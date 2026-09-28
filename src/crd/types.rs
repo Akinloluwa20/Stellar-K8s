@@ -485,6 +485,32 @@ pub struct SnapshotScheduleConfig {
     pub encryption_key_ref: Option<String>,
 }
 
+/// Configuration for pre-upgrade PVC backup snapshots.
+///
+/// When set on a Validator node, the controller creates a CSI `VolumeSnapshot`
+/// before updating the StatefulSet image and waits for the snapshot to become
+/// `ReadyToUse` before allowing the rollout to continue.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupConfig {
+    /// VolumeSnapshotClass name. If unset, the default class for the PVC's driver is used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume_snapshot_class_name: Option<String>,
+    /// If true, the operator will attempt to flush/lock the Stellar database briefly before creating the snapshot.
+    #[serde(default)]
+    pub flush_before_snapshot: bool,
+    /// Maximum time in seconds to wait for the snapshot to become ReadyToUse before failing the upgrade.
+    #[serde(default = "default_backup_ready_timeout_seconds")]
+    pub ready_timeout_seconds: u64,
+    /// Reference to a Cloud KMS key for encrypting the snapshot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encryption_key_ref: Option<String>,
+}
+
+fn default_backup_ready_timeout_seconds() -> u64 {
+    300
+}
+
 /// Configuration to bootstrap a new node from an existing CSI VolumeSnapshot
 ///
 /// When set, the node's PVC is created from the specified VolumeSnapshot instead of
@@ -1024,6 +1050,23 @@ pub struct IngressConfig {
     /// ExternalDNS configuration for automated record management
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_dns: Option<ExternalDNSConfig>,
+    /// Optional ingress rate limiting hints for generated ingress resources.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limit: Option<IngressRateLimitConfig>,
+}
+
+/// Ingress rate limiting configuration.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IngressRateLimitConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requests_per_second: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requests_per_minute: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connections: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub burst_multiplier: Option<u32>,
 }
 
 /// Ingress host entry
@@ -1086,6 +1129,9 @@ pub struct AutoscalingConfig {
     /// Gas-consumption-driven autoscaling configuration. Only valid for SorobanRPC nodes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gas_autoscaling: Option<GasAutoscalingConfig>,
+    /// Pending-request-queue-depth autoscaling. Only valid for SorobanRPC nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_autoscaling: Option<QueueAutoscalingConfig>,
 }
 
 /// eBPF-based proactive failure detection configuration
@@ -1101,6 +1147,80 @@ pub struct EbpfConfig {
     /// Track TCP retransmits and handshake times for peer connections
     #[serde(default = "default_true")]
     pub monitor_tcp_retransmits: bool,
+}
+
+/// Pod/container security context overrides accepted by StellarNode.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StellarSecurityContext {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_as_non_root: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_as_user: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_as_group: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fs_group: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_only_root_filesystem: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_privilege_escalation: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub privileged: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<ContainerCapabilities>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seccomp_profile: Option<SeccompProfileOverride>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainerCapabilities {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub add: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drop: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SeccompProfileOverride {
+    #[serde(rename = "type")]
+    pub type_: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub localhost_profile: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RbacConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opa_endpoint: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum OperatorRole {
+    SuperAdmin,
+    Operator,
+    Auditor,
+    Viewer,
 }
 
 /// Scaling behavior configuration for HPA
@@ -1227,6 +1347,7 @@ pub enum RolloutStrategyType {
     #[default]
     RollingUpdate,
     Canary,
+    BlueGreen,
 }
 
 /// Rollout strategy for updates
@@ -1237,6 +1358,8 @@ pub struct RolloutStrategy {
     pub strategy_type: RolloutStrategyType,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub canary: Option<CanaryConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blue_green: Option<BlueGreenStrategyConfig>,
 }
 
 impl RolloutStrategy {
@@ -1247,6 +1370,47 @@ impl RolloutStrategy {
             None
         }
     }
+
+    pub fn blue_green_or_default(&self) -> BlueGreenStrategyConfig {
+        self.blue_green.clone().unwrap_or_default()
+    }
+}
+
+/// Configuration for validator blue/green rollout.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BlueGreenStrategyConfig {
+    /// Maximum ledger lag allowed before cutover. Default: 5 ledgers.
+    #[serde(default = "default_blue_green_max_ledger_lag")]
+    pub max_ledger_lag: u64,
+    /// Maximum time to wait for a color to become ready.
+    #[serde(default = "default_blue_green_ready_timeout_seconds")]
+    pub ready_timeout_seconds: u64,
+    /// Require a volume snapshot before preparing green storage.
+    #[serde(default)]
+    pub require_volume_snapshot: bool,
+    /// Optional Kubernetes VolumeSnapshotClass to use for cutover snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_snapshot_class_name: Option<String>,
+}
+
+impl Default for BlueGreenStrategyConfig {
+    fn default() -> Self {
+        Self {
+            max_ledger_lag: default_blue_green_max_ledger_lag(),
+            ready_timeout_seconds: default_blue_green_ready_timeout_seconds(),
+            require_volume_snapshot: false,
+            volume_snapshot_class_name: None,
+        }
+    }
+}
+
+fn default_blue_green_max_ledger_lag() -> u64 {
+    5
+}
+
+fn default_blue_green_ready_timeout_seconds() -> u64 {
+    600
 }
 
 /// Configuration for Canary rollout
@@ -1557,6 +1721,8 @@ pub struct DisasterRecoveryConfig {
     pub enabled: bool,
     pub role: DRRole,
     pub peer_cluster_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_ref: Option<String>,
     #[serde(default)]
     pub sync_strategy: DRSyncStrategy,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1620,6 +1786,7 @@ pub enum DRSyncStrategy {
     Consensus,
     PeerTracking,
     ArchiveSync,
+    StreamingLedger,
 }
 
 /// Configuration for multi-region ledger replication
@@ -1698,13 +1865,47 @@ pub struct PeeringConfig {
 pub struct DisasterRecoveryStatus {
     pub current_role: Option<DRRole>,
     pub peer_health: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_health_map: Option<Vec<DRPeerHealth>>,
     pub last_peer_contact: Option<String>,
     pub sync_lag: Option<u64>,
     pub failover_active: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_failover_time: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_failover_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_peer_cluster_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_check_time: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_drill_time: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_drill_result: Option<DRDrillResult>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DRPeerHealth {
+    pub cluster_id: String,
+    pub health: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_contact: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DRFailureType {
+    PodKill,
+    NetworkLatency,
+    DiskPressure,
+    RegionOutage,
+}
+
+fn default_dr_failure_type() -> DRFailureType {
+    DRFailureType::PodKill
 }
 
 /// Configuration for automated DR drill scheduling
@@ -1713,6 +1914,8 @@ pub struct DisasterRecoveryStatus {
 pub struct DRDrillScheduleConfig {
     /// Cron expression for drill scheduling (e.g., "0 2 * * 0" for weekly Sunday 2 AM)
     pub schedule: String,
+    #[serde(default = "default_dr_failure_type")]
+    pub failure_type: DRFailureType,
     /// Whether to actually perform failover or just simulate it (dry-run)
     #[serde(default)]
     pub dry_run: bool,
@@ -1862,6 +2065,8 @@ pub struct CrossClusterConfig {
     #[serde(default)]
     pub auto_discovery: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub federation: Option<CrossClusterFederationConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub health_check: Option<CrossClusterHealthCheck>,
 }
 
@@ -1879,9 +2084,17 @@ impl Default for CrossClusterConfig {
             peer_clusters: Vec::new(),
             latency_threshold_ms: default_latency_threshold(),
             auto_discovery: false,
+            federation: None,
             health_check: None,
         }
     }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CrossClusterFederationConfig {
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 /// Cross-cluster networking mode
@@ -1964,6 +2177,12 @@ pub struct PeerClusterConfig {
     pub cluster_id: String,
     pub endpoint: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub kubeconfig_secret_ref: Option<String>,
+    #[serde(default = "default_kubeconfig_secret_key")]
+    pub kubeconfig_secret_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_namespace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_threshold_ms: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
@@ -1977,6 +2196,10 @@ pub struct PeerClusterConfig {
 
 fn default_peer_priority() -> u32 {
     100
+}
+
+fn default_kubeconfig_secret_key() -> String {
+    "kubeconfig".to_string()
 }
 
 /// Health check configuration for cross-cluster peers
@@ -2188,6 +2411,12 @@ pub struct DbMaintenanceConfig {
     /// Maintenance window duration (e.g., "2h")
     pub window_duration: String,
 
+    /// Optional cron expression (6 fields with seconds, e.g., `"0 0 2 * * *"`)
+    /// that triggers compaction on a fixed schedule. When set, this takes
+    /// precedence over `window_start`/`window_duration`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<String>,
+
     /// Bloat threshold percentage to trigger VACUUM FULL (default: 30)
     #[serde(default = "default_bloat_threshold")]
     pub bloat_threshold_percent: u32,
@@ -2199,9 +2428,23 @@ pub struct DbMaintenanceConfig {
     /// Coordination with read-pool for zero-downtime
     #[serde(default = "default_true")]
     pub read_pool_coordination: bool,
+
+    /// Prune old ledgers (history_ledgers and dependent history tables)
+    /// during maintenance. Disabled by default because pruning is destructive.
+    #[serde(default)]
+    pub enable_ledger_pruning: bool,
+
+    /// Retention period for pruned ledgers in days (default: 30). Only used
+    /// when `enable_ledger_pruning` is true.
+    #[serde(default = "default_pruning_retention_days")]
+    pub pruning_retention_days: u32,
 }
 
 fn default_bloat_threshold() -> u32 {
+    30
+}
+
+fn default_pruning_retention_days() -> u32 {
     30
 }
 
@@ -2857,5 +3100,101 @@ pub struct GasAutoscalingConfig {
 
     /// Polling interval in seconds (default: 6, matching average ledger close time).
     #[serde(default = "default_poll_interval_seconds")]
+    pub poll_interval_seconds: u32,
+}
+
+fn default_queue_enabled() -> bool {
+    false
+}
+
+fn default_queue_min_replicas() -> u32 {
+    1
+}
+
+fn default_queue_max_replicas() -> u32 {
+    10
+}
+
+fn default_target_pending_per_replica() -> u64 {
+    100
+}
+
+fn default_queue_metric_name() -> String {
+    "soroban_rpc_pending_requests".to_string()
+}
+
+fn default_queue_scale_up_cooldown() -> String {
+    "0s".to_string()
+}
+
+fn default_queue_scale_down_cooldown() -> String {
+    "60s".to_string()
+}
+
+fn default_stabilization_window_seconds() -> u32 {
+    300
+}
+
+fn default_queue_poll_interval_seconds() -> u32 {
+    2
+}
+
+/// Pending-queue-depth-driven autoscaling for Soroban RPC nodes.
+///
+/// Unlike CPU/memory HPA, this scales the Soroban RPC Deployment directly from
+/// the node's pending request queue depth, so burst traffic triggers a scale-up
+/// in the next poll cycle (seconds) instead of waiting for utilization metrics
+/// to accumulate. Scale-down is gated by a stabilization window to prevent pod
+/// thrashing.
+///
+/// Only valid when spec.nodeType == SorobanRPC.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueAutoscalingConfig {
+    /// Enable queue-depth autoscaling.
+    #[serde(default = "default_queue_enabled")]
+    pub enabled: bool,
+
+    /// Minimum replica count. Must be >= 1.
+    #[serde(default = "default_queue_min_replicas")]
+    pub min_replicas: u32,
+
+    /// Maximum replica count. Must be >= min_replicas.
+    #[serde(default = "default_queue_max_replicas")]
+    pub max_replicas: u32,
+
+    /// Target number of pending requests each replica is expected to absorb.
+    /// Desired replicas = ceil(pending_queue / target), computed in integer
+    /// arithmetic (no floating-point drift).
+    #[serde(default = "default_target_pending_per_replica")]
+    pub target_pending_per_replica: u64,
+
+    /// Name of the Prometheus gauge exposed by the node that reports the
+    /// current pending request queue length.
+    #[serde(default = "default_queue_metric_name")]
+    pub metric_name: String,
+
+    /// Optional metrics endpoint to poll. Defaults to the node's
+    /// `http://<service>.<namespace>.svc.cluster.local:8000/metrics`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric_url: Option<String>,
+
+    /// Cooldown after a scale-up event (e.g. "0s", "15s"). Defaults to "0s"
+    /// so load bursts are absorbed immediately.
+    #[serde(default = "default_queue_scale_up_cooldown")]
+    pub scale_up_cooldown: String,
+
+    /// Cooldown after a scale-down event (e.g. "60s", "5m").
+    #[serde(default = "default_queue_scale_down_cooldown")]
+    pub scale_down_cooldown: String,
+
+    /// Scale-down stabilization window in seconds. The operator only scales
+    /// down after the desired replica count has stayed below the current count
+    /// for the entire window, preventing rapid pod thrashing on transient dips.
+    #[serde(default = "default_stabilization_window_seconds")]
+    pub stabilization_window_seconds: u32,
+
+    /// Polling interval in seconds for reading the pending queue gauge.
+    #[serde(default = "default_queue_poll_interval_seconds")]
     pub poll_interval_seconds: u32,
 }

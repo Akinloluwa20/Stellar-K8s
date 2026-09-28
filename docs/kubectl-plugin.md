@@ -195,6 +195,59 @@ kubectl stellar search "S3 backup config" --full
 
 The search tool works completely offline by using a built-in index of all documentation files, Architecture Decision Records (ADRs), and guides.
 
+## Snapshot Management
+
+Manage VolumeSnapshots for StellarNode data PVCs. Requires the CSI snapshotter (`snapshot.storage.k8s.io/v1`) installed in your cluster.
+
+### Create a Snapshot
+
+```bash
+kubectl stellar snapshot create <node-name>
+```
+
+Optionally specify a VolumeSnapshotClass:
+
+```bash
+kubectl stellar snapshot create my-validator --volume-snapshot-class csi-aws-vsc
+```
+
+The snapshot is named `<node-name>-data-<timestamp>` and labelled `stellar.org/snapshot-of=<node-name>`.
+
+### List Snapshots
+
+```bash
+# All operator-managed snapshots in the current namespace
+kubectl stellar snapshot list
+
+# Snapshots for a specific node
+kubectl stellar snapshot list my-validator
+
+# Across all namespaces
+kubectl stellar snapshot list -A
+
+# JSON output
+kubectl stellar snapshot list -o json
+```
+
+### Restore from a Snapshot
+
+```bash
+kubectl stellar snapshot restore <snapshot-name> <node-name>
+```
+
+This patches `spec.storage.snapshotRef.volumeSnapshotName` on the StellarNode so the operator uses the snapshot as the PVC data source on the next pod (re)creation. To trigger an immediate restore, also delete the existing data PVC:
+
+```bash
+kubectl stellar snapshot restore my-validator-data-20260101-120000 my-validator
+kubectl delete pvc my-validator-data -n stellar
+```
+
+The operator reprovisioning the PVC from the snapshot and restarts the pod automatically.
+
+> All snapshot sub-commands support `--dry-run` to preview actions without making any API calls.
+
+---
+
 ## Examples
 
 ```bash

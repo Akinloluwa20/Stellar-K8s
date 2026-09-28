@@ -1,3 +1,15 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 //! Admission Webhook Server
 //!
 //! This module implements a Kubernetes ValidatingAdmissionWebhook server
@@ -6,6 +18,7 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     extract::State,
@@ -37,6 +50,38 @@ pub struct WebhookServer {
 
     /// TLS configuration
     tls_config: Option<TlsConfig>,
+
+    /// External policy delegation configuration for OPA/Gatekeeper.
+    policy_config: PolicyDelegationConfig,
+
+    /// HTTP client used for external policy delegation requests.
+    policy_http: reqwest::Client,
+}
+
+#[derive(Clone, Debug)]
+struct PolicyDelegationConfig {
+    endpoint: Option<String>,
+    timeout: Duration,
+    fail_open: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DelegatedPolicyResponse {
+    allowed: bool,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SecurityPolicyInfo {
+    name: String,
+    engine: String,
+    description: String,
+    path: String,
 }
 
 /// TLS configuration for the webhook server
@@ -115,10 +160,111 @@ pub struct PluginResultInfo {
 impl WebhookServer {
     /// Create a new webhook server
     pub fn new(runtime: WasmRuntime) -> Self {
+        let endpoint = std::env::var("OPA_GATEKEEPER_WEBHOOK_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
+        let timeout_ms = std::env::var("OPA_GATEKEEPER_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(1500);
+        let fail_open = std::env::var("OPA_GATEKEEPER_FAIL_OPEN")
+            .ok()
+            .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false);
+        let timeout = Duration::from_millis(timeout_ms);
+        let policy_http = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
         Self {
             runtime: Arc::new(runtime),
             plugins: Arc::new(RwLock::new(Vec::new())),
             tls_config: None,
+            policy_config: PolicyDelegationConfig {
+                endpoint,
+                timeout,
+                fail_open,
+            },
+            policy_http,
+        }
+    }
+
+    async fn delegate_policy_check(&self, input: &ValidationInput) -> ValidationOutput {
+        let Some(endpoint) = self.policy_config.endpoint.as_ref() else {
+            return ValidationOutput::allowed();
+        };
+
+        let mut headers = reqwest::header::HeaderMap::new();
+        crate::telemetry::inject_trace_headers(&mut headers);
+        let result = self
+            .policy_http
+            .post(endpoint)
+            .headers(headers)
+            .json(input)
+            .send()
+            .await;
+
+        let response = match result {
+            Ok(resp) => resp,
+            Err(e) => {
+                let message = format!(
+                    "OPA/Gatekeeper delegation request failed (timeout={}ms): {}",
+                    self.policy_config.timeout.as_millis(),
+                    e
+                );
+                return if self.policy_config.fail_open {
+                    ValidationOutput::allowed_with_warnings(vec![message])
+                } else {
+                    ValidationOutput::denied(message)
+                };
+            }
+        };
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            let message = format!(
+                "OPA/Gatekeeper delegation returned HTTP {}: {}",
+                status,
+                body.trim()
+            );
+            return if self.policy_config.fail_open {
+                ValidationOutput::allowed_with_warnings(vec![message])
+            } else {
+                ValidationOutput::denied(message)
+            };
+        }
+
+        match response.json::<DelegatedPolicyResponse>().await {
+            Ok(payload) => {
+                if payload.allowed {
+                    if payload.warnings.is_empty() {
+                        ValidationOutput::allowed()
+                    } else {
+                        ValidationOutput::allowed_with_warnings(payload.warnings)
+                    }
+                } else {
+                    ValidationOutput {
+                        allowed: false,
+                        message: payload
+                            .message
+                            .or(Some("Denied by OPA/Gatekeeper policy".to_string())),
+                        reason: Some("DelegatedPolicyDenied".to_string()),
+                        errors: Vec::new(),
+                        warnings: payload.warnings,
+                        audit_annotations: BTreeMap::new(),
+                    }
+                }
+            }
+            Err(e) => {
+                let message = format!("Invalid OPA/Gatekeeper response payload: {}", e);
+                if self.policy_config.fail_open {
+                    ValidationOutput::allowed_with_warnings(vec![message])
+                } else {
+                    ValidationOutput::denied(message)
+                }
+            }
         }
     }
 
@@ -193,6 +339,20 @@ impl WebhookServer {
                     builtin.warnings.extend(warnings);
                     return builtin;
                 }
+
+                let delegated = self.delegate_policy_check(&input).await;
+                warnings.extend(delegated.warnings.clone());
+                if !delegated.allowed {
+                    return ServerValidationResult {
+                        allowed: false,
+                        message: delegated
+                            .message
+                            .or(Some("Denied by OPA/Gatekeeper policy".to_string())),
+                        warnings,
+                        plugin_results: vec![],
+                        total_execution_time_ms: 0,
+                    };
+                }
             }
         }
 
@@ -259,18 +419,19 @@ impl WebhookServer {
         }
     }
 
-    /// Start the webhook server
-    pub async fn start(self, addr: SocketAddr) -> Result<()> {
-        // Check TLS config before moving self into Arc
-        let has_tls = self.tls_config.is_some();
-
+    /// Build the HTTP router used by [`Self::start`].
+    ///
+    /// Exposed for hermetic HTTP contract tests (issue #1152) so malformed and
+    /// boundary payloads can be exercised without binding a TCP listener.
+    pub fn into_router(self) -> Router {
         let state = Arc::new(self);
-
-        let app = Router::new()
+        Router::new()
             .route("/health", get(health_handler))
             .route("/healthz", get(health_handler))
             .route("/ready", get(ready_handler))
             .route("/validate", post(validate_handler))
+            .route("/validate/policy", post(validate_policy_handler))
+            .route("/policy/library", get(policy_library_handler))
             .route("/mutate", post(mutate_handler))
             .route("/db-trigger", post(db_trigger_handler))
             .route("/plugins", get(list_plugins_handler))
@@ -279,13 +440,23 @@ impl WebhookServer {
                 "/plugins/{name}",
                 axum::routing::delete(remove_plugin_handler),
             )
-            .with_state(state);
+            .layer(axum::middleware::from_fn(
+                crate::telemetry::http_trace_middleware,
+            ))
+            .with_state(state)
+    }
+
+    /// Start the webhook server
+    pub async fn start(self, addr: SocketAddr) -> Result<()> {
+        // Check TLS config before moving self into the router
+        let has_tls = self.tls_config.is_some();
+        let app = self.into_router();
 
         info!("Starting webhook server on {}", addr);
 
         // Check if TLS is configured
         if has_tls {
-            // TODO: Implement TLS server with rustls
+            // TODO(exempt: pending rustls server): Implement TLS server with rustls
             // For now, fall back to non-TLS
             warn!("TLS configuration provided but not yet implemented, using plain HTTP");
         }
@@ -363,6 +534,11 @@ async fn validate_handler(
     // Execute validation
     let result = state.validate(input).await;
 
+    if !result.allowed {
+        let reason = result.message.as_deref().unwrap_or("Validation failed");
+        log_validation_rejection(&req, reason);
+    }
+
     // Build response
     let mut response = if result.allowed {
         AdmissionResponse::from(&req)
@@ -385,6 +561,161 @@ async fn validate_handler(
     );
 
     (StatusCode::OK, Json(response.into_review()))
+}
+
+fn log_validation_rejection(req: &AdmissionRequest<StellarNode>, reason: &str) {
+    let name = if req.name.is_empty() {
+        req.object
+            .as_ref()
+            .and_then(|node| node.metadata.name.as_deref())
+            .unwrap_or("<unknown>")
+    } else {
+        req.name.as_str()
+    };
+    let namespace = req.namespace.as_deref().unwrap_or("<cluster>");
+    let sanitized_reason = sanitize_validation_log_message(reason);
+
+    warn!(
+        resource_name = %name,
+        namespace = %namespace,
+        operation = ?req.operation,
+        validation_error = %sanitized_reason,
+        "Admission request rejected for StellarNode validation"
+    );
+}
+
+fn sanitize_validation_log_message(message: &str) -> String {
+    const MAX_LOGGED_REASON_LEN: usize = 2048;
+    const SENSITIVE_KEYS: [&str; 13] = [
+        "secret",
+        "api_key",
+        "apikey",
+        "access_key",
+        "accesskey",
+        "password",
+        "passwd",
+        "token",
+        "credential",
+        "privatekey",
+        "private_key",
+        "mnemonic",
+        "secretvalue",
+    ];
+
+    let normalized = message.replace(['\n', '\r'], " ");
+    let sanitized = normalized
+        .split_whitespace()
+        .map(|token| sanitize_log_token(token, &SENSITIVE_KEYS))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if sanitized.len() > MAX_LOGGED_REASON_LEN {
+        let truncated = sanitized
+            .chars()
+            .take(MAX_LOGGED_REASON_LEN)
+            .collect::<String>();
+        format!("{truncated}...<truncated>")
+    } else {
+        sanitized
+    }
+}
+
+fn sanitize_log_token(token: &str, sensitive_keys: &[&str]) -> String {
+    let lower = token.to_ascii_lowercase();
+    let Some(separator_index) = token.find('=').or_else(|| token.find(':')) else {
+        return token.to_string();
+    };
+
+    let key = &lower[..separator_index];
+    if sensitive_keys
+        .iter()
+        .any(|sensitive| key.contains(sensitive))
+    {
+        format!("{}=<redacted>", &token[..separator_index])
+    } else {
+        token.to_string()
+    }
+}
+
+#[instrument(
+    skip(state, review),
+    fields(node_name = "-", namespace = "-", reconcile_id = "-")
+)]
+async fn validate_policy_handler(
+    State(state): State<Arc<WebhookServer>>,
+    Json(review): Json<AdmissionReview<StellarNode>>,
+) -> impl IntoResponse {
+    let request = match review.try_into() {
+        Ok(req) => req,
+        Err(e) => {
+            error!("Failed to parse admission request: {e}");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(
+                    AdmissionResponse::invalid(format!("Invalid admission request: {e}"))
+                        .into_review(),
+                ),
+            );
+        }
+    };
+
+    let req: AdmissionRequest<StellarNode> = request;
+    let input = build_validation_input(&req);
+    let delegated = state.delegate_policy_check(&input).await;
+
+    if !delegated.allowed {
+        let reason = delegated.message.as_deref().unwrap_or("Denied by policy");
+        log_validation_rejection(&req, reason);
+    }
+
+    let mut response = if delegated.allowed {
+        AdmissionResponse::from(&req)
+    } else {
+        AdmissionResponse::from(&req).deny(
+            delegated
+                .message
+                .unwrap_or_else(|| "Denied by policy".to_string()),
+        )
+    };
+
+    if !delegated.warnings.is_empty() {
+        response.warnings = Some(delegated.warnings);
+    }
+
+    (StatusCode::OK, Json(response.into_review()))
+}
+
+fn default_security_policy_library() -> Vec<SecurityPolicyInfo> {
+    vec![
+        SecurityPolicyInfo {
+            name: "required-labels".to_string(),
+            engine: "gatekeeper".to_string(),
+            description: "Enforces required organizational labels on resources.".to_string(),
+            path: "config/manifests/gatekeeper/required-labels-template.yaml".to_string(),
+        },
+        SecurityPolicyInfo {
+            name: "approved-registries".to_string(),
+            engine: "gatekeeper".to_string(),
+            description: "Restricts container images to approved registries.".to_string(),
+            path: "config/manifests/gatekeeper/approved-registries-template.yaml".to_string(),
+        },
+        SecurityPolicyInfo {
+            name: "resource-limits".to_string(),
+            engine: "gatekeeper".to_string(),
+            description: "Requires CPU and memory limits on all containers.".to_string(),
+            path: "config/manifests/gatekeeper/resource-limits-template.yaml".to_string(),
+        },
+        SecurityPolicyInfo {
+            name: "stellarnode-cel-validation".to_string(),
+            engine: "cel".to_string(),
+            description: "Built-in CEL rules in the StellarNode CRD schema.".to_string(),
+            path: "config/crd/stellarnode-crd.yaml".to_string(),
+        },
+    ]
+}
+
+async fn policy_library_handler() -> impl IntoResponse {
+    (StatusCode::OK, Json(default_security_policy_library()))
 }
 
 #[instrument(
@@ -745,7 +1076,10 @@ mod base64_serde {
     use base64::{engine::general_purpose::STANDARD, Engine};
     use serde::{Deserialize, Deserializer, Serializer};
 
-    #[allow(dead_code)]
+    /// Serialize bytes as a base64 string.
+    /// Included for symmetry with `deserialize`; some serde consumers only use
+    /// one half of the pair, which the compiler flags as dead.
+    #[allow(dead_code)] // serde module convention: serialize/deserialize pair
     pub fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -798,7 +1132,15 @@ mod tests {
         let server = WebhookServer::new(runtime);
 
         let valid_object = serde_json::json!({
-            "metadata": { "name": "my-validator", "namespace": "default" },
+            "metadata": {
+                "name": "my-validator",
+                "namespace": "default",
+                "labels": { "project-id": "stellar-test", "owner": "platform-team" }
+                "labels": {
+                    "project-id": "test",
+                    "owner": "test"
+                }
+            },
             "spec": {
                 "nodeType": "Validator",
                 "network": "testnet",
@@ -828,7 +1170,14 @@ mod tests {
         let server = WebhookServer::new(runtime);
 
         let invalid_object = serde_json::json!({
-            "metadata": { "name": "bad", "namespace": "default" },
+            "metadata": {
+                "name": "bad",
+                "namespace": "default",
+                "labels": {
+                    "project-id": "test",
+                    "owner": "test"
+                }
+            },
             "spec": {
                 "nodeType": "InvalidType",
                 "network": "testnet",
@@ -856,7 +1205,15 @@ mod tests {
         let server = WebhookServer::new(runtime);
 
         let missing_required = serde_json::json!({
-            "metadata": { "name": "no-config", "namespace": "default" },
+            "metadata": {
+                "name": "no-config",
+                "namespace": "default",
+                "labels": { "project-id": "stellar-test", "owner": "platform-team" }
+                "labels": {
+                    "project-id": "test",
+                    "owner": "test"
+                }
+            },
             "spec": {
                 "nodeType": "Validator",
                 "network": "testnet",
@@ -889,7 +1246,15 @@ mod tests {
         let server = WebhookServer::new(runtime);
 
         let valid_object = serde_json::json!({
-            "metadata": { "name": "my-validator", "namespace": "default" },
+            "metadata": {
+                "name": "my-validator",
+                "namespace": "default",
+                "labels": { "project-id": "stellar-test", "owner": "platform-team" }
+                "labels": {
+                    "project-id": "test",
+                    "owner": "test"
+                }
+            },
             "spec": {
                 "nodeType": "Validator",
                 "network": "testnet",
@@ -952,7 +1317,15 @@ mod tests {
         server.add_plugin(config).await.unwrap();
 
         let valid_object = serde_json::json!({
-            "metadata": { "name": "test", "namespace": "default" },
+            "metadata": {
+                "name": "test",
+                "namespace": "default",
+                "labels": { "project-id": "stellar-test", "owner": "platform-team" }
+                "labels": {
+                    "project-id": "test",
+                    "owner": "test"
+                }
+            },
             "spec": {
                 "nodeType": "Validator",
                 "network": "testnet",
@@ -1028,7 +1401,15 @@ mod tests {
         server.add_plugin(config).await.unwrap();
 
         let valid_object = serde_json::json!({
-            "metadata": { "name": "test", "namespace": "default" },
+            "metadata": {
+                "name": "test",
+                "namespace": "default",
+                "labels": { "project-id": "stellar-test", "owner": "platform-team" }
+                "labels": {
+                    "project-id": "test",
+                    "owner": "test"
+                }
+            },
             "spec": {
                 "nodeType": "Validator",
                 "network": "testnet",
@@ -1050,5 +1431,275 @@ mod tests {
             !result.warnings.is_empty(),
             "expected warning about plugin failure"
         );
+    }
+
+    #[test]
+    fn policy_library_contains_gatekeeper_and_cel_entries() {
+        let policies = default_security_policy_library();
+        assert!(
+            policies.iter().any(|p| p.engine == "gatekeeper"),
+            "expected at least one gatekeeper policy"
+        );
+        assert!(
+            policies.iter().any(|p| p.engine == "cel"),
+            "expected at least one CEL policy"
+        );
+    }
+
+    #[test]
+    fn validation_log_sanitizer_preserves_field_errors() {
+        let message =
+            "[spec.nodeType] nodeType must be one of Validator, Horizon, SorobanRpc - Hint: fix it";
+
+        let sanitized = sanitize_validation_log_message(message);
+
+        assert!(sanitized.contains("spec.nodeType"));
+        assert!(sanitized.contains("nodeType must be one of"));
+    }
+
+    #[test]
+    fn validation_log_sanitizer_redacts_inline_sensitive_values() {
+        let message = "validation failed: token=abc123 password:super-secret clientSecret=secret-value field=spec.version";
+
+        let sanitized = sanitize_validation_log_message(message);
+
+        assert!(sanitized.contains("token=<redacted>"));
+        assert!(sanitized.contains("password=<redacted>"));
+        assert!(sanitized.contains("clientSecret=<redacted>"));
+        assert!(sanitized.contains("field=spec.version"));
+        assert!(!sanitized.contains("abc123"));
+        assert!(!sanitized.contains("super-secret"));
+        assert!(!sanitized.contains("secret-value"));
+    }
+
+    // ── Stress tests: throughput and timeout behaviour ────────────────────────
+
+    fn valid_stellarnode_object() -> serde_json::Value {
+        serde_json::json!({
+            "metadata": {
+                "name": "stress-validator",
+                "namespace": "default",
+                "labels": {"project-id": "stress", "owner": "stress-test"}
+            },
+            "spec": {
+                "nodeType": "Validator",
+                "network": "testnet",
+                "version": "v21.0.0",
+                "replicas": 1,
+                "validatorConfig": {
+                    "seedSecretRef": "seed",
+                    "enableHistoryArchive": false,
+                    "historyArchiveUrls": []
+                }
+            }
+        })
+    }
+
+    fn invalid_stellarnode_object() -> serde_json::Value {
+        serde_json::json!({
+            "metadata": {"name": "bad", "namespace": "default"},
+            "spec": {"nodeType": "InvalidKind", "network": "testnet", "version": "v21.0.0"}
+        })
+    }
+
+    /// Concurrent valid requests all complete successfully and return `allowed`.
+    #[tokio::test]
+    async fn stress_concurrent_valid_requests_all_allowed() {
+        let server = std::sync::Arc::new(WebhookServer::new(WasmRuntime::new().unwrap()));
+        let obj = valid_stellarnode_object();
+        const CONCURRENCY: usize = 50;
+
+        let futures: Vec<_> = (0..CONCURRENCY)
+            .map(|_| {
+                let s = server.clone();
+                let o = obj.clone();
+                async move {
+                    s.validate(validation_input(Operation::Create, Some(o)))
+                        .await
+                }
+            })
+            .collect();
+
+        let results = futures::future::join_all(futures).await;
+
+        let denied: Vec<_> = results.iter().filter(|r| !r.allowed).collect();
+        assert!(
+            denied.is_empty(),
+            "{} of {} concurrent requests were unexpectedly denied",
+            denied.len(),
+            CONCURRENCY
+        );
+    }
+
+    /// Concurrent invalid requests are all denied; none cause a panic or hang.
+    #[tokio::test]
+    async fn stress_concurrent_invalid_requests_all_denied() {
+        let server = std::sync::Arc::new(WebhookServer::new(WasmRuntime::new().unwrap()));
+        let obj = invalid_stellarnode_object();
+        const CONCURRENCY: usize = 30;
+
+        let futures: Vec<_> = (0..CONCURRENCY)
+            .map(|_| {
+                let s = server.clone();
+                let o = obj.clone();
+                async move {
+                    s.validate(validation_input(Operation::Create, Some(o)))
+                        .await
+                }
+            })
+            .collect();
+
+        let results = futures::future::join_all(futures).await;
+
+        let allowed: Vec<_> = results.iter().filter(|r| r.allowed).collect();
+        assert!(
+            allowed.is_empty(),
+            "{} of {} invalid requests were unexpectedly allowed",
+            allowed.len(),
+            CONCURRENCY
+        );
+        // Every denied result must carry an error message.
+        for r in &results {
+            assert!(
+                r.message.is_some(),
+                "denied result is missing an error message"
+            );
+        }
+    }
+
+    /// Mixed concurrent load: valid and invalid requests are segregated correctly.
+    #[tokio::test]
+    async fn stress_mixed_concurrent_requests_segregated_correctly() {
+        let server = std::sync::Arc::new(WebhookServer::new(WasmRuntime::new().unwrap()));
+        let valid = valid_stellarnode_object();
+        let invalid = invalid_stellarnode_object();
+        const HALF: usize = 20;
+
+        let valid_futures: Vec<_> = (0..HALF)
+            .map(|_| {
+                let s = server.clone();
+                let o = valid.clone();
+                async move {
+                    let r = s
+                        .validate(validation_input(Operation::Create, Some(o)))
+                        .await;
+                    ("valid", r.allowed)
+                }
+            })
+            .collect();
+
+        let invalid_futures: Vec<_> = (0..HALF)
+            .map(|_| {
+                let s = server.clone();
+                let o = invalid.clone();
+                async move {
+                    let r = s
+                        .validate(validation_input(Operation::Create, Some(o)))
+                        .await;
+                    ("invalid", r.allowed)
+                }
+            })
+            .collect();
+
+        let valid_results: Vec<_> = futures::future::join_all(valid_futures).await;
+        let invalid_results: Vec<_> = futures::future::join_all(invalid_futures).await;
+
+        let valid_denied = valid_results.iter().filter(|(_, ok)| !ok).count();
+        let invalid_allowed = invalid_results.iter().filter(|(_, ok)| *ok).count();
+
+        assert_eq!(
+            valid_denied, 0,
+            "{valid_denied} valid requests were incorrectly denied"
+        );
+        assert_eq!(
+            invalid_allowed, 0,
+            "{invalid_allowed} invalid requests were incorrectly allowed"
+        );
+    }
+
+    /// High sequential throughput: server handles 200 sequential validates
+    /// without degradation (each must return a result, never hang).
+    #[tokio::test]
+    async fn stress_high_sequential_throughput_no_hang() {
+        let server = WebhookServer::new(WasmRuntime::new().unwrap());
+        let obj = valid_stellarnode_object();
+        const TOTAL: usize = 200;
+
+        for _ in 0..TOTAL {
+            let input = validation_input(Operation::Create, Some(obj.clone()));
+            let result = server.validate(input).await;
+            assert!(
+                result.allowed,
+                "sequential request was unexpectedly denied: {:?}",
+                result.message
+            );
+        }
+    }
+
+    /// Timeout resilience: a fail-open plugin that traps must not block other
+    /// concurrent requests — all complete within a reasonable wall-clock window.
+    #[tokio::test]
+    async fn stress_trap_plugin_does_not_block_concurrent_requests() {
+        let runtime = WasmRuntime::new().unwrap();
+        let server = std::sync::Arc::new(WebhookServer::new(runtime));
+
+        // Load a fail-open plugin that traps immediately.
+        let wasm = wat::parse_str(
+            r#"(module
+                  (func (export "validate") unreachable)
+                  (memory (export "memory") 1)
+               )"#,
+        )
+        .unwrap();
+        let config = PluginConfig {
+            metadata: PluginMetadata {
+                name: "stress-trap".to_string(),
+                version: "0.0.1".to_string(),
+                description: None,
+                author: None,
+                sha256: None,
+                limits: PluginLimits::default(),
+            },
+            wasm_binary: Some(base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                &wasm,
+            )),
+            config_map_ref: None,
+            secret_ref: None,
+            url: None,
+            operations: vec![Operation::Create],
+            enabled: true,
+            fail_open: true,
+            plugin_config: BTreeMap::new(),
+        };
+        server.add_plugin(config).await.unwrap();
+
+        let obj = valid_stellarnode_object();
+        const CONCURRENCY: usize = 20;
+
+        let futures: Vec<_> = (0..CONCURRENCY)
+            .map(|_| {
+                let s = server.clone();
+                let o = obj.clone();
+                async move {
+                    s.validate(validation_input(Operation::Create, Some(o)))
+                        .await
+                }
+            })
+            .collect();
+
+        // All requests complete (fail-open means allowed despite the trap).
+        let results = futures::future::join_all(futures).await;
+        for r in &results {
+            assert!(
+                r.allowed,
+                "fail-open trap plugin should allow: {:?}",
+                r.message
+            );
+            assert!(
+                !r.warnings.is_empty(),
+                "fail-open trap plugin should emit a warning"
+            );
+        }
     }
 }

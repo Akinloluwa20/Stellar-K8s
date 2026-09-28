@@ -1,3 +1,15 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 //! SCP Topology REST and WebSocket handlers
 //!
 //! Provides two endpoints for visualising the real-time Stellar Consensus Protocol (SCP)
@@ -305,13 +317,15 @@ fn short_key(key: &str) -> String {
 
 /// Tracks the last observed SCP phase + ballot counter per node across WebSocket frames.
 /// Nodes that do not advance within `stall_threshold` are flagged as stalled.
-#[allow(dead_code)]
+/// This tracker is instantiated inside the WebSocket streaming handler; the compiler
+/// does not see the construction site so `#[allow(dead_code)]` is required on the struct.
+#[allow(dead_code)] // constructed inside the WS streaming closure
 struct StallTracker {
     last_seen: HashMap<String, (String, u32, Instant)>,
     stall_threshold: Duration,
 }
 
-#[allow(dead_code)]
+#[allow(dead_code)] // methods called through the WS streaming closure
 impl StallTracker {
     fn new(stall_threshold: Duration) -> Self {
         Self {

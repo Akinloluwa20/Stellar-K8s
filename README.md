@@ -4,7 +4,50 @@
 
 # Stellar-K8s: Cloud-Native Stellar Infrastructure
 
-![Rust](https://img.shields.io/badge/Built%20with-Rust-orange?style=for-the-badge&logo=rust) ![Kubernetes](https://img.shields.io/badge/Kubernetes-Operator-blue?style=for-the-badge&logo=kubernetes) ![License](https://img.shields.io/badge/License-Apache%202.0-green?style=for-the-badge) ![CI/CD](https://img.shields.io/github/actions/workflow/status/stellar/stellar-k8s/ci.yml?style=for-the-badge&label=Build) [![codecov](https://codecov.io/gh/TheCreatorNode/Stellar-K8s/branch/main/graph/badge.svg)](https://codecov.io/gh/TheCreatorNode/Stellar-K8s)
+<!-- CI / Quality -->
+<p align="center">
+  <a href="https://github.com/OtowoOrg/Stellar-K8s/actions/workflows/ci.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/OtowoOrg/Stellar-K8s/ci.yml?branch=main&style=for-the-badge&label=CI&logo=github" alt="CI" />
+  </a>
+  <a href="https://codecov.io/gh/OtowoOrg/Stellar-K8s">
+    <img src="https://img.shields.io/codecov/c/github/OtowoOrg/Stellar-K8s/main?style=for-the-badge&logo=codecov" alt="Coverage" />
+  </a>
+  <a href="https://github.com/OtowoOrg/Stellar-K8s/actions/workflows/security-scan.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/OtowoOrg/Stellar-K8s/security-scan.yml?branch=main&style=for-the-badge&label=Security&logo=trivy" alt="Security Scan" />
+  </a>
+</p>
+
+<!-- Release / Docs -->
+<p align="center">
+  <a href="https://github.com/OtowoOrg/Stellar-K8s/actions/workflows/release.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/OtowoOrg/Stellar-K8s/release.yml?style=for-the-badge&label=Release&logo=github" alt="Release Pipeline" />
+  </a>
+  <a href="https://github.com/OtowoOrg/Stellar-K8s/releases">
+    <img src="https://img.shields.io/github/v/release/OtowoOrg/Stellar-K8s?style=for-the-badge&logo=github" alt="Latest Release" />
+  </a>
+  <a href="https://github.com/OtowoOrg/Stellar-K8s/actions/workflows/docs-deploy.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/OtowoOrg/Stellar-K8s/docs-deploy.yml?branch=main&style=for-the-badge&label=Docs&logo=readthedocs" alt="Docs Deploy" />
+  </a>
+</p>
+
+<!-- Performance / Chaos -->
+<p align="center">
+  <a href="https://github.com/OtowoOrg/Stellar-K8s/actions/workflows/performance.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/OtowoOrg/Stellar-K8s/performance.yml?branch=main&style=for-the-badge&label=Performance&logo=speedtest" alt="Performance" />
+  </a>
+  <a href="https://github.com/OtowoOrg/Stellar-K8s/actions/workflows/chaos-tests.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/OtowoOrg/Stellar-K8s/chaos-tests.yml?branch=main&style=for-the-badge&label=Chaos&logo=kubernetes" alt="Chaos Tests" />
+  </a>
+  <a href="https://github.com/OtowoOrg/Stellar-K8s/blob/main/LICENSE">
+    <img src="https://img.shields.io/github/license/OtowoOrg/Stellar-K8s?style=for-the-badge" alt="License" />
+  </a>
+</p>
+
+<!-- Stack -->
+<p align="center">
+  <img src="https://img.shields.io/badge/Built%20with-Rust-orange?style=for-the-badge&logo=rust" alt="Built with Rust" />
+  <img src="https://img.shields.io/badge/Kubernetes-Operator-blue?style=for-the-badge&logo=kubernetes" alt="Kubernetes Operator" />
+</p>
 
 > **Production-grade Stellar infrastructure in one command.**
 
@@ -44,11 +87,14 @@ Stellar-K8s follows the **Operator Pattern**, extending Kubernetes with a `Stell
 - **Kubernetes cluster** (1.28+)
 - **kubectl** configured
 - **Helm 3.x** (for operator installation)
-- **Rust 1.88+** (for local development)
-  - CI/CD and Docker builds use Rust 1.93 for consistency
-  - Contributors can use any Rust 1.88+ version locally
+- **Rust 1.92+** (minimum enforced by CI's `preflight`/`lint` jobs and
+  `scripts/lib/versions.sh` — run `make dev-setup` or
+  `cargo run --bin stellar-bootstrap-verify` to check your local version)
+  - Docker builds (`Dockerfile`, `Dockerfile.dev`) currently use Rust 1.95
 
 > **New to Stellar-K8s?** See the [Glossary](docs/glossary.md) for definitions of common terms like [Validator](docs/glossary.md#validator), [Horizon](docs/glossary.md#horizon), [SCP](docs/glossary.md#scp-stellar-consensus-protocol), and [Reconciliation](docs/glossary.md#reconciliation).
+>
+> **Have questions?** Check the [Frequently Asked Questions](docs/faq.md) for answers to common issues with mTLS, disk scaling, peer discovery, and troubleshooting.
 
 ---
 
@@ -71,7 +117,7 @@ make compose-logs
 make compose-down
 ```
 
-See the [Docker Compose Quickstart Guide](docs/docker-compose-quickstart.md) for detailed instructions.
+See the [Docker Compose → Kubernetes Migration Guide](docs/docker-compose-to-kubernetes-migration.md) for detailed instructions on moving from Compose to a full cluster.
 
 ### Option 2: Kubernetes Cluster
 
@@ -87,6 +133,7 @@ helm install stellar-operator stellar-k8s/stellar-operator \
   --namespace stellar-system \
   --create-namespace
 ```
+
 
 ### Install the Operator via OLM
 
@@ -105,7 +152,7 @@ metadata:
   namespace: stellar
 spec:
   nodeType: Validator
-  network: Testnet
+  network: testnet
   version: "v21.0.0"
   storage:
     storageClass: "standard"
@@ -157,12 +204,28 @@ kubectl stellar logs my-validator -f
 
 See [kubectl-plugin.md](docs/kubectl-plugin.md) for complete documentation.
 
-### 4. Shell Completion
+### Shell Completions
 
-Generate shell completion scripts for the stellar-operator CLI to enable tab completion:
+Stellar CLI provides automated shell completions for Bash, Zsh, and Fish.
+
+**Installation:**
+
+You can easily install completions directly to your system's default directories:
 
 ```bash
-# Generate completions for all shells
+# Install for your current shell
+stellar-operator install-completion bash
+stellar-operator install-completion zsh
+stellar-operator install-completion fish
+
+# Same for the kubectl plugin
+kubectl stellar install-completion bash
+```
+
+Alternatively, you can generate them manually:
+
+```bash
+# Generate completions for all shells into ./completions
 make completions
 
 # Or generate for a specific shell
@@ -170,12 +233,6 @@ cargo run --bin stellar-completions completions bash > stellar-operator.bash
 cargo run --bin stellar-completions completions zsh > _stellar-operator
 cargo run --bin stellar-completions completions fish > stellar-operator.fish
 ```
-
-**Installation:**
-
-- **Bash**: `source completions/stellar-operator.bash` or copy to `/etc/bash_completion.d/`
-- **Zsh**: Copy `completions/_stellar-operator` to a directory in your `$fpath`
-- **Fish**: Copy `completions/stellar-operator.fish` to `~/.config/fish/completions/`
 
 After installation, you can use tab completion with the `stellar-operator` command:
 
@@ -188,9 +245,9 @@ stellar-operator run --<TAB>  # Shows available flags
 
 Major architectural decisions are documented in our [ADR directory](docs/adr/README.md), including:
 
-- **Choice of Rust** - Rationale for selecting Rust as the programming language
-- **kube-rs Finalizers** - Strategy for resource cleanup and lifecycle management
-- **CRD Versioning** - Approach to API evolution and backward compatibility
+- **Choice of Rust Programming Language** - Rationale for selecting Rust as the programming language
+- **Use of kube-rs Finalizers** - Strategy for resource cleanup and lifecycle management
+- **CRD Versioning Strategy** - Approach to API evolution and backward compatibility
 
 ### 4. Custom Validation Policies with WebAssembly
 
@@ -285,6 +342,8 @@ The operator exposes the following production-readiness metrics:
 
 The operator supports runtime feature flags via the `stellar-operator-config` ConfigMap. Changes are picked up **without restart**.
 
+Dead flags that no longer gated any code paths were removed. Only `enable_dr` remains.
+
 ```yaml
 apiVersion: v1
 kind: ConfigMap
@@ -292,46 +351,27 @@ metadata:
   name: stellar-operator-config
   namespace: stellar-system
 data:
-  enable_cve_scanning: "true"
-  enable_read_pool: "false"
   enable_dr: "false"
-  enable_peer_discovery: "true"
-  enable_archive_health: "true"
-  enable_soroban_metrics: "true"
 ```
 
-| Flag                     | Default | Description                         |
-| ------------------------ | ------- | ----------------------------------- |
-| `enable_cve_scanning`    | `true`  | Automatic CVE patch reconciliation  |
-| `enable_read_pool`       | `false` | Read-replica pool management        |
-| `enable_dr`              | `false` | Disaster-recovery drill scheduling  |
-| `enable_peer_discovery`  | `true`  | Automatic peer discovery            |
-| `enable_archive_health`  | `true`  | History archive health checks       |
-| `enable_soroban_metrics` | `true`  | Soroban-specific Prometheus metrics |
+| Flag        | Default | Description                                                   |
+| ----------- | ------- | ------------------------------------------------------------- |
+| `enable_dr` | `false` | Disaster-recovery / cross-region bridge resources and drills |
 
 When using the Helm chart, set flags via `values.yaml`:
 
 ```yaml
 featureFlags:
-  enableCveScanning: "true"
-  enableReadPool: "false"
+  enableDr: false
 ```
 
 ---
 
 ## 🤝 Contributing
 
-We welcome contributions! This project uses pre-commit hooks to ensure code quality. Please see our [Contributing Guide](CONTRIBUTING.md) for details on our development process, coding standards, and how to submit pull requests.
+We welcome contributions! This project uses pre-commit hooks to ensure code quality.
 
-### Quick Start for Contributors
-
-```bash
-# Setup development environment (includes pre-commit hooks)
-make dev-setup
-
-# Run pre-commit hooks manually
-make pre-commit
-```
+Please see our **[Contributing Guide](CONTRIBUTING.md)** for details on our workflow, commit conventions, and pull request guidelines. For development setup instructions, see the **[Development Guide](DEVELOPMENT.md)**.
 
 ---
 
@@ -607,44 +647,32 @@ The full `StellarNode` CRD field reference — including all fields, types, defa
 
 **[docs/api-reference.md](docs/api-reference.md)**
 
-The reference is auto-generated from the CRD OpenAPI schema. To regenerate after modifying the CRD types:
+The CRD reference is auto-generated from the CRD OpenAPI schema. To regenerate after modifying the CRD types:
 
 ```bash
 make generate-api-docs
 ```
 
----
-
-## Development
-
-### Prerequisites
-
-- Rust (latest stable)
-- Docker & Kubernetes cluster
-- Make
-
-### Quick Start
+Operator REST endpoints are documented in **[docs/api/openapi.yaml](docs/api/openapi.yaml)** (OpenAPI 3.0). Validate coverage with:
 
 ```bash
-# Setup development environment
-make dev-setup
-
-# Standard Development Targets
-make build         # Build release binary
-make test          # Run all tests
-make lint          # Run clippy
-make fmt           # Format code
-make docker-build  # Build Docker image
-make helm-lint     # Run Helm chart linting
-make crd-gen       # Generate CRDs
-make run-local     # Run operator locally in dev mode
-make clean         # Clean build artifacts
-
-# Full CI validation
-make ci-local
+make check-openapi-spec
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed development guidelines.
+Interactive Swagger UI is available at `/developer` when the API gateway is enabled.
+
+---
+
+## 💻 Development
+
+For detailed instructions on setting up a local development environment, building the project, running tests, and managing Kubernetes resources locally, please refer to the **[Development Guide](DEVELOPMENT.md)**.
+
+Reliability and observability:
+
+- [Database migration testing](docs/database/migrations.md)
+- [YAML / CRD schema validation](docs/yaml-schema-validation.md)
+- [Helm chart testing](docs/helm-chart-testing.md)
+- [OpenTelemetry tracing](docs/observability/tracing.md)
 
 ### Reconciler fuzzing
 

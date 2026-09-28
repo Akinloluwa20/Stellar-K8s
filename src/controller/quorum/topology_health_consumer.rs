@@ -1,3 +1,15 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 //! Topological Health Consumer for SCP Analytics
 //!
 //! This module implements a Kafka consumer that processes SCP messages
@@ -308,7 +320,7 @@ impl TopologyHealthConsumer {
         let partition_detected = self.detect_partition(&states);
 
         // Calculate health score
-        let health_score = self.calculate_health_score(
+        let health_score = Self::calculate_health_score(
             active_validators,
             stalled_count,
             critical_count,
@@ -443,7 +455,6 @@ impl TopologyHealthConsumer {
 
     /// Calculate overall health score
     fn calculate_health_score(
-        &self,
         active: u32,
         stalled: u32,
         critical: u32,
@@ -476,7 +487,7 @@ impl TopologyHealthConsumer {
             score -= 0.2;
         }
 
-        score.max(0.0).min(1.0)
+        score.clamp(0.0, 1.0)
     }
 
     /// Get the latest health metrics
@@ -501,27 +512,20 @@ mod tests {
 
     #[test]
     fn test_health_score_calculation() {
-        let consumer = TopologyHealthConsumer {
-            consumer: unsafe { std::mem::zeroed() }, // Mock for testing
-            config: TopologyHealthConfig::default(),
-            validator_states: Arc::new(RwLock::new(HashMap::new())),
-            latest_health: Arc::new(RwLock::new(None)),
-        };
-
         // Perfect health
-        let score = consumer.calculate_health_score(10, 0, 0, true, false);
+        let score = TopologyHealthConsumer::calculate_health_score(10, 0, 0, true, false);
         assert_eq!(score, 1.0);
 
         // Some stalled validators
-        let score = consumer.calculate_health_score(10, 3, 0, true, false);
+        let score = TopologyHealthConsumer::calculate_health_score(10, 3, 0, true, false);
         assert!(score < 1.0 && score > 0.6);
 
         // No quorum intersection
-        let score = consumer.calculate_health_score(10, 0, 0, false, false);
+        let score = TopologyHealthConsumer::calculate_health_score(10, 0, 0, false, false);
         assert!(score < 0.8);
 
         // Network partition
-        let score = consumer.calculate_health_score(10, 0, 0, true, true);
+        let score = TopologyHealthConsumer::calculate_health_score(10, 0, 0, true, true);
         assert!(score < 0.9);
     }
 }

@@ -1,0 +1,169 @@
+site_name: Stellar-K8s Documentation
+site_url: https://m1s0g1.github.io/Stellar-K8s/
+site_description: Comprehensive documentation for deploying and managing Stellar blockchain nodes on Kubernetes
+repo_url: https://github.com/OtowoOrg/Stellar-K8s
+repo_name: OtowoOrg/Stellar-K8s
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    # Light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    # Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  font:
+    text: Roboto
+    code: Roboto Mono
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search:
+      lang: en
+      separator: '[\s\-,:!=\[\]()"/]+|(?!\b)(?=[A-Z][a-z])|\.(?!\d)|&[lg]t;'
+  - minify:
+      minify_html: true
+      minify_js: true
+      minify_css: true
+      htmlmin_opts:
+        remove_comments: true
+      cache_safe: true
+  - git-revision-date-localized:
+      enable_creation_date: true
+      type: timeago
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - attr_list
+  - md_in_html
+  - tables
+  - footnotes
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - getting-started/index.md
+    - Prerequisites: getting-started/prerequisites.md
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quick-start.md
+  - Deployment Guides:
+    - deployment-guides/index.md
+    - Validator Node: deployment-guides/validator.md
+    - Horizon API: deployment-guides/horizon.md
+    - Horizon Query API Reference: horizon-query-api-reference.md
+    - Soroban RPC: deployment-guides/soroban-rpc.md
+  - Multi-Region:
+    - multi-region-deployment-and-failover.md
+  - Configuration:
+    - configuration/index.md
+    - CRD Reference: configuration/crd-reference.md
+    - Operators: configuration/operators.md
+    - Storage: configuration/storage.md
+    - Database Optimization: database/optimization-guide.md
+  - Tutorials:
+    - tutorials/index.md
+    - Deploy Testnet Validator: tutorials/deploy-testnet-validator.md
+    - Configure HA Setup: tutorials/configure-ha-setup.md
+    - Backup and Restore: tutorials/backup-restore.md
+  - Operations & Observability:
+    - SCP Consensus Topology and Monitoring: scp-consensus-topology-and-monitoring.md
+    - Production Profiling Runbook: operations/profiling-runbook.md
+    - Core Blue/Green Runbook: operations/core-blue-green-runbook.md
+    - OpenTelemetry Tracing: observability/tracing.md
+    - Distributed Rate Limiting: distributed-rate-limiting.md
+    - Feature Flag Rollouts: feature-flag-rollouts.md
+  - Troubleshooting:
+    - troubleshooting/index.md
+    - Common Issues: troubleshooting/common-issues.md
+    - Networking: troubleshooting/networking.md
+    - Diagnostic Decision Trees: troubleshooting/diagnostic-decision-trees.md
+    - Operator Runbooks: troubleshooting/operator-runbooks.md
+    - Metrics and Alerting: troubleshooting/metrics-alerting.md
+  - API Reference:
+    - api-reference.md
+    - Operator REST API:
+      - api/index.md
+      - OpenAPI Specification: api/openapi.yaml
+      - API Versioning: api/versioning.md
+      - Webhook API: api/webhook.md
+      - Metrics API: api/metrics.md
+      - Error Codes: api/error-codes.md
+      - Client Libraries: api/client-libraries.md
+  - Security:
+    - Security Compliance Guide: security/compliance-guide.md
+    - Container Image Security: container-image-security.md
+    - Credentials & Secrets: security/credentials-and-secrets.md
+    - Pod Security Standards: security/pss.md
+    - Automated Dependency Updates: security/dependency-updates.md
+  - Networking:
+    - Comprehensive Network Guide: networking/index.md
+  - Development:
+    - Regeneration Guide: development/regeneration-guide.md
+    - Repo Health Checklist: development/repo-health-checklist.md
+    - Static Analysis Gates: development/static-analysis-gates.md
+    - License Header Compliance: development/license-headers.md
+    - Automated Load Testing: load-testing.md
+    - YAML Schema Validation: yaml-schema-validation.md
+    - Helm Chart Testing: helm-chart-testing.md
+    - Database Migrations: database/migrations.md
+    - Reconciler Phases: reconciler-phases.md
+  - Contributing:
+    - contributing/index.md
+    - Development Setup: contributing/development-setup.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/OtowoOrg/Stellar-K8s
+      name: GitHub Repository
+  version:
+    provider: mike
+    default: latest
+
+copyright: Copyright &copy; 2024 Stellar-K8s Contributors

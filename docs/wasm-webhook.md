@@ -598,3 +598,16 @@ See the [examples/plugins](../examples/plugins/) directory for complete examples
 - [Wasmtime](https://wasmtime.dev/)
 - [Kubernetes Admission Webhooks](https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/)
 - [Rust Wasm Book](https://rustwasm.github.io/docs/book/)
+
+---
+
+## Payload contract tests
+
+Malformed and boundary AdmissionReview payloads are covered by hermetic HTTP
+contract tests in `tests/webhook_payload_contract.rs` (issue #1152). These
+exercise empty/non-JSON/truncated bodies, missing requests, oversized payloads,
+and mutate/validate parity without a live Kubernetes API server.
+
+---
+
+*Last verified: 2026-07-29 (webhook payload contract tests #1152; TODO exemption hygiene).*

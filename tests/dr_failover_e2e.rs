@@ -1,16 +1,22 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+mod common;
+
+use common::skip_if_tools_missing;
 use std::error::Error;
 use std::process::{Command, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
-
-fn tool_available(binary: &str) -> bool {
-    Command::new(binary)
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok()
-}
 
 const OPERATOR_NAMESPACE: &str = "dr-operator-system";
 const PRIMARY_NAMESPACE: &str = "region-primary";
@@ -23,11 +29,8 @@ const STANDBY_NODE_NAME: &str = "e2e-dr-standby";
 #[ignore]
 fn e2e_dr_failover() -> Result<(), Box<dyn std::error::Error>> {
     // ── Prerequisite check ─────────────────────────────────────────────────────
-    for tool in &["kind", "kubectl", "docker"] {
-        if !tool_available(tool) {
-            eprintln!("Skipping e2e test: `{tool}` not found in PATH.");
-            return Ok(());
-        }
+    if skip_if_tools_missing(&["kind", "kubectl", "docker"]) {
+        return Ok(());
     }
 
     let cluster_name = std::env::var("KIND_CLUSTER_NAME").unwrap_or_else(|_| "stellar-e2e".into());
@@ -407,7 +410,7 @@ fn run_cmd_with_stdin(program: &str, args: &[&str], input: &str) -> Result<(), B
     let mut cmd = Command::new(program);
     cmd.args(args);
     if let Ok(kubeconfig) = std::env::var("KUBECONFIG") {
-        cmd.env("KUBECONconfig", kubeconfig);
+        cmd.env("KUBECONFIG", kubeconfig);
     }
     let mut child = cmd
         .stdin(Stdio::piped())

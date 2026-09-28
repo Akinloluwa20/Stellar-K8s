@@ -1,3 +1,44 @@
+import ArgocdGenerator from './components/ArgocdGenerator'
+
+**ArgoCD GitOps Guide**
+
+This guide walks through a declarative, versioned GitOps deployment of a Testnet Validator and a Soroban RPC node using ArgoCD.
+
+**What this page contains**
+- A step-by-step, declarative "golden path" for ArgoCD.
+- An interactive manifest generator that produces ready-to-apply ArgoCD `Application` YAMLs.
+- Notes on kube-rs Finalizers and safe deletion via ArgoCD.
+
+<ArgocdGenerator />
+
+**Quick example usage**
+
+1. Add this repository to your ArgoCD instance (Settings → Repositories) pointing at the repo URL.
+2. Use the generator above to produce an `Application` manifest (download or copy).
+3. Apply the generated YAML to ArgoCD's namespace (or use the helper examples under `examples/argocd`).
+
+**Golden path manifests**
+
+See the example `Application` manifests included in [examples/argocd](../examples/argocd/README.md).
+
+**Handling kube-rs Finalizers (edge case)**
+
+kube-rs-managed resources sometimes install Finalizers that prevent immediate deletion. In a GitOps workflow this can leave orphaned PVCs or CRs if resources are removed in the Git tree and ArgoCD prunes them before the finalizer cleanup completes.
+
+Recommended declarative approaches:
+- Use ArgoCD's `syncPolicy.automated.prune: true` with `syncOptions: ["PruneLast=true"]` to ensure dependent resources are deleted in a safe order.
+- Add explicit `kubernetes.io/ttl` or lifecycle `Job` resources in Git that perform graceful finalizer removal as part of deletion (declare the Job and a `delete` `Application` if you need orchestration).
+- Avoid manual `kubectl patch` in documented golden path; instead include a small controller manifest (in `examples/argocd/finalizer-cleanup/`) that can be toggled on/off by ArgoCD.
+
+Practical tip: when testing with Minikube/Kind, run a sync and then monitor the ArgoCD UI to ensure resources reach `Healthy` and `Synced`. If you observe Finalizer-related hangs, re-enable the cleanup `Application` to reconcile deletions.
+
+**Validation**
+
+The manifests in `examples/argocd` are authored to be declarative and ready for a fresh Minikube/Kind cluster with ArgoCD installed. They reference this repository and local chart paths — add this repo to ArgoCD and sync the Applications.
+
+**Screenshots / Recording**
+
+Place any terminal session recordings or screenshots in `docs/gitops/argocd-artifacts/` — the PR should include a short recording showing a clean ArgoCD sync of the examples.
 ---
 title: ArgoCD GitOps deployment guide
 sidebar_label: ArgoCD GitOps

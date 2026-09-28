@@ -1,3 +1,15 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 use futures::{StreamExt, TryStreamExt};
 use kube::{
     api::Api,
@@ -12,23 +24,23 @@ use tokio::sync::RwLock;
 use tracing::info;
 
 use crate::controller::audit_log::{AdminAction, AuditEntry};
-use crate::controller::audit_sink::AuditSink;
+use crate::controller::audit_recorder::AuditRecorder;
 use crate::crd::StellarNode;
 use crate::error::Result;
 
 /// Worker that watches for StellarNode changes and emits audit logs.
 pub struct AuditWorker {
     client: Client,
-    sink: Arc<dyn AuditSink>,
+    recorder: Arc<AuditRecorder>,
     /// Cache of resource versions to detect actual changes and avoid redundant audits.
     cache: Arc<RwLock<HashMap<String, Value>>>,
 }
 
 impl AuditWorker {
-    pub fn new(client: Client, sink: Arc<dyn AuditSink>) -> Self {
+    pub fn new(client: Client, recorder: Arc<AuditRecorder>) -> Self {
         Self {
             client,
-            sink,
+            recorder,
             cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -68,7 +80,7 @@ impl AuditWorker {
                                 )
                                 .with_diff(serde_json::to_value(diff).unwrap_or_default());
 
-                                let _ = self.sink.persist(entry).await;
+                                self.recorder.record(entry).await;
                             }
                         }
                     } else {
@@ -83,7 +95,7 @@ impl AuditWorker {
                         )
                         .with_diff(current_val.clone());
 
-                        let _ = self.sink.persist(entry).await;
+                        self.recorder.record(entry).await;
                     }
                     cache.insert(name, current_val);
                 }
@@ -99,7 +111,7 @@ impl AuditWorker {
                         Some("StellarNode deleted"),
                     );
 
-                    let _ = self.sink.persist(entry).await;
+                    self.recorder.record(entry).await;
                     self.cache.write().await.remove(&name);
                 }
                 watcher::Event::Init | watcher::Event::InitDone => {}

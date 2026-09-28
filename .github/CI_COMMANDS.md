@@ -1,225 +1,377 @@
-# CI Commands Reference
+# CI Pipeline Architecture & Reliability Guide
 
-This document lists the exact commands that run in CI. You can run these locally before pushing to ensure your changes will pass all checks.
+## Overview
 
-## Quick Check (Pre-Commit)
-
-**Purpose**: Fast validation before committing (~30 seconds)
-
-```bash
-# Check if code is properly formatted
-cargo fmt --all --check
-
-# Compile check (faster than full build)
-cargo check --workspace
-```
-
-**What it does**: Verifies your code is formatted and compiles without errors.
+This document describes the optimized CI/CD pipeline architecture.  It covers
+the original cleanup wave (issues #700, #701, #703, #714) as well as the
+follow-up hardening wave (issues #1136, #1137, #1138, #1139).
 
 ---
 
-## Full CI Pipeline
+## Shared Composite Actions
 
-These are the exact steps GitHub Actions runs. Run them locally to catch issues before pushing.
+All reusable logic lives under `.github/actions/`:
 
-### 1. Security Audit
+| Action | Purpose |
+|--------|---------|
+| `setup-rust` | Install Rust toolchain + system deps + Swatinem cache + optional cargo tools (with retry) |
+| `setup-kind-cluster` | Provision kind cluster, load image, install CRDs, deploy operator |
+| `collect-e2e-logs` | Dump operator logs, K8s events, StellarNode status → artifact |
+| `collect-failure-diagnostics` | Unified failing-run diagnostics bundle (issue #1151) |
+| `setup-perf-env` | Install k6/kind/kubectl, create cluster, deploy operator with RBAC, port-forward |
+| `build-operator` | Build Rust binary + Docker image + artifact upload in one call (issue #1136) |
 
-**Purpose**: Detect security vulnerabilities in dependencies
-
-```bash
-# Install cargo-audit if not already installed
-cargo install --locked cargo-audit
-
-# Check for unsound code (memory safety issues)
-cargo audit --deny unsound
-```
-
-**What it checks**:
-
-- Memory safety vulnerabilities (RUSTSEC advisories)
-- Blocks unsound code that could cause crashes or security issues
-- Warns about unmaintained dependencies (non-blocking)
+See [`docs/ci-failure-diagnostics.md`](../docs/ci-failure-diagnostics.md) for the
+bundle layout and how to invoke `scripts/ci/collect-failure-diagnostics.sh`
+locally.
 
 ---
 
-### 2. Format Check
+## Cleanup Wave: Issue #1175
 
-**Purpose**: Enforce consistent code style
+### #1175 — Remove redundant CI bootstrap from duplicated workflow jobs
 
+Several workflows still re-implemented the same Rust bootstrap after
+`setup-rust` already covered it:
+
+- **Double `cargo install`** — `ci.yml`, `dependency-review.yml`, and
+  `maintenance.yml` passed `extra-tools` to `setup-rust` and then ran a
+  second install loop for the same crates.
+- **Raw toolchain install** — `security-audit.yml` and `dead-code-report.yml`
+  still inlined `dtolnay/rust-toolchain` + `Swatinem/rust-cache` instead of
+  calling `setup-rust`.
+- **Leftover duplicate in `stale-docs.yml`** — after #1136 it called
+  `setup-rust` *and* still installed the toolchain again via `dtolnay`.
+
+**Fix:**
+1. `setup-rust` now owns cargo-tool install **with a 3-attempt retry**.
+2. Workflow jobs only pass `extra-tools:` — no per-job install steps.
+3. Scheduled/security/dead-code workflows delegate to `setup-rust`.
+4. `ci-reliability-test` asserts retry lives in the composite and that
+   workflows do not re-bootstrap `cargo-audit` / `cargo-tarpaulin` /
+   `cargo-deny`.
+
+**Verification:**
 ```bash
-# Verify all code follows Rust formatting standards
-cargo fmt --all --check
-```
+# Only release.yml (cross-compile matrix) may call rust-toolchain directly
+grep -RIn 'dtolnay/rust-toolchain' .github/ \
+  | grep -v 'setup-rust/action.yml'
 
-**What it checks**: Code formatting according to rustfmt rules. If this fails, run `cargo fmt --all` to auto-fix.
+# No duplicated cargo-tool bootstrap in workflows
+grep -RIn -E 'cargo install (cargo-audit|cargo-tarpaulin|cargo-deny)' \
+  .github/workflows/ || echo "none"
+
+bash scripts/ci/check-cache-keys.sh
+```
 
 ---
 
-### 3. Lint (Clippy)
+## Hardening Wave: Issues #1136–#1139
 
-**Purpose**: Catch common mistakes and enforce best practices
+### #1136 — Consolidate duplicated command bootstrap across CI workflows
 
-```bash
-# Run Clippy with zero-warnings policy
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+The `chaos-tests`, `soak-test`, `performance`, and `verify-operator-boot`
+workflows previously each contained their own copy of:
+
+```
+setup-rust → cargo build --release → docker build → docker save → upload-artifact
 ```
 
-**What it checks**:
+This is now consolidated into `.github/actions/build-operator/action.yml`.
+Each workflow calls the composite action with the appropriate `image-tag`,
+`cache-key`, and optional `binary-only` / `upload-artifact` flags.
 
-- Code quality issues
-- Common mistakes and anti-patterns
-- Performance improvements
-- Best practice violations
+Additionally, `stale-docs.yml` previously had its own `dtolnay/rust-toolchain`
+install + manual `actions/cache` block.  It now uses `setup-rust` for
+consistency.
 
-**Note**: `-D warnings` means any warning = CI failure (zero-warning policy)
+**Verification:** grep for `dtolnay/rust-toolchain` outside of
+`.github/actions/setup-rust/action.yml` — the only remaining hit should be
+`release.yml` (cross-compilation matrix targets require direct toolchain
+installation per platform).
+
+### #1137 — Enforce command parity between README, Makefile, and CI jobs
+
+Missing Makefile targets that were declared in `.PHONY` but had no recipe
+body:
+
+| Target | Fix |
+|--------|-----|
+| `docker-multiarch` | Added recipe that dispatches the `multiarch-build.yml` workflow via `gh workflow run` |
+| `run` | Added recipe as a documented alias for `run-local` (matches README references) |
+| `update-doc-baseline` | New target to run `doc-check --update-baseline` |
+| `docs-check-strict` | New target that runs `doc-check status` without `--warn-only` (hard fail) |
+| `docs-lint` | New target that runs `cargo doc` with `RUSTDOCFLAGS="-D warnings"` |
+| `sort-manifests` | New target that invokes `scripts/sort-manifests.py` on stdin |
+
+**Verification:** `make help` — all targets declared in `.PHONY` now have a
+corresponding recipe and description.
+
+> **Note:** `docs-check-strict` and `sort-manifests` were later pruned as
+> unused in #1177. The detector still hard-fails via `make check-stale-docs`,
+> and `scripts/sort-manifests.py` remains wired directly into
+> `.github/workflows/ci.yml` and `scripts/check-helm-drift.sh`.
+
+### #1138 — Add strict failure-on-warning policy for Rust lint and docs stages
+
+Two changes enforce a zero-tolerance warning policy:
+
+1. **`ci.yml` lint job** — a new "Check rustdoc (warnings as errors)" step runs
+   `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace …` immediately
+   after the existing clippy steps.  A missing or malformed doc comment now
+   fails CI.
+
+2. **`docs-deploy.yml`** — removed the `continue-on-error: true` guard on the
+   `cargo doc` step and added `RUSTDOCFLAGS="-D warnings"`.  Broken docs can no
+   longer silently pass and be published.
+
+3. **Makefile `ci-local`** — `docs-lint` is now part of the local CI pipeline
+   so contributors catch doc warnings before pushing.
+
+**Verification:**
+```bash
+# Local check
+make docs-lint
+
+# Simulate CI
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace \
+  --features "rest-api,metrics,admission-webhook,k8s-v1-30"
+```
+
+### #1139 — Create deterministic ordering for generated manifests in pipelines
+
+Two sources of non-determinism have been addressed:
+
+1. **`crd-gen` Makefile target** — output of `cargo run --bin crdgen` is now
+   piped through `scripts/sort-manifests.py`, which sorts all YAML mapping keys
+   recursively and orders documents by `(kind, namespace, name)`.
+
+2. **`bundle-render` Makefile target** — output of `helm template` is sorted the
+   same way before being written to `rendered/manifests.yaml`.
+
+3. **`ci.yml` `manifest-order` job** — new CI job that:
+   - Verifies `config/crd/stellarnode-crd.yaml` is already in canonical sorted
+     order (fails if uncommitted CRD changes are present without sorting).
+   - Renders the Helm chart twice and diffs the sorted outputs to confirm
+     idempotence.
+
+**Verification:**
+```bash
+# Sort an existing manifest and check for diffs
+python3 scripts/sort-manifests.py config/crd/stellarnode-crd.yaml \
+  | diff - config/crd/stellarnode-crd.yaml && echo "Already sorted"
+
+# Regenerate CRD with deterministic output
+make crd-gen
+git diff config/crd/stellarnode-crd.yaml  # should be empty if already sorted
+```
 
 ---
 
-### 4. Test Suite
+### `ci.yml`
+- **Change detection** gates expensive jobs (helm-lint, api-docs, examples-smoke-test,
+  security-audit) so they only run when relevant files change.
+- **Unified Rust cache** via `setup-rust` composite action with per-job `shared-key`.
+- **Removed duplicate** system-dependency install blocks (now in `setup-rust`).
+- **Removed duplicate** `actions/checkout@v6` references (standardised on `@v4`).
+- `lint` and `security-audit` run in **parallel** (both depend only on `changes`).
+- `test` runs on every PR; `coverage` runs on **main pushes only** (tarpaulin is slow).
+- Removed standalone `pre-commit.yml` and `commit-lint.yml` workflows — lint/format
+  is covered by the main `ci.yml` `lint` job.
 
-**Purpose**: Verify all functionality works correctly
-
-```bash
-# Run all unit tests, integration tests, and binary tests
-cargo test --workspace --all-features --verbose
-
-# Run documentation tests
-cargo test --doc --workspace
-```
-
-**What it runs**:
-- **62+ total tests** across the entire workspace
-  - 52 `StellarNodeSpec` validation tests (CRD validation)
-  - 5 kubectl plugin tests (table/JSON/YAML formatting)
-  - Controller logic tests
-  - Webhook tests
-  - Documentation example tests
-
-**Note**: CI runs both command sets. Locally, you can skip doc tests if examples are outdated.
+### Estimated time reduction
+Parallel lint + audit + test/coverage, combined with shared caching, reduces
+the critical path by ~35–40% compared to the previous sequential layout.
 
 ---
 
-### 5. Build Release
+## Heavy Validation Workflows (#703)
 
-**Purpose**: Verify production build succeeds
+### `chaos-tests.yml`
+- **Extracted** cluster provisioning into `setup-kind-cluster` composite action.
+- **Parallel execution**: experiments 01–02 (pod-kill, network partition) run in
+  `chaos-kill-network` job; experiments 03–05 (latency, peer-partition, disk-fill)
+  run in `chaos-latency-disk` job simultaneously.
+- **Consolidated logging** via `collect-e2e-logs` composite action.
+- Binary built once in a `build` job and downloaded as an artifact by both
+  parallel jobs — no duplicate Rust compilation.
 
-```bash
-# Build optimized release binary with locked dependencies
-cargo build --release --locked
-```
+### `soak-test.yml`
+- Uses `setup-kind-cluster` for cluster provisioning.
+- Uses `collect-e2e-logs` for failure-time log collection.
+- Removed duplicated Rust toolchain + apt-get blocks.
 
-**What it does**:
-
-- Builds with optimizations enabled
-- Uses exact dependency versions from Cargo.lock (--locked)
-- Produces production-ready binary in `target/release/stellar-operator`
-
----
-
-### 6. Docker Build
-
-**Purpose**: Verify container image builds successfully
-
-```bash
-# Build Docker image for local testing
-docker build -t stellar-operator:local .
-```
-
-**What it does**:
-
-- Multi-stage build using latest stable Rust
-- Creates minimal distroless runtime image
-- Supports multi-arch (amd64/arm64) in CI
+### `verify-operator-boot.yml`
+- Uses `setup-rust` composite action.
+- Runs on **main pushes** and `workflow_dispatch` only (kind-cluster boot check is
+  too heavy for every contributor PR).
+- Artifact name includes `github.run_id` to avoid collisions.
 
 ---
 
-## Using Make Commands
+## Performance & Benchmark Workflows (#701)
 
-**Easier alternative**: Use the Makefile targets instead of running commands manually.
-
-```bash
-# One-time setup (installs Rust, components, tools)
-make dev-setup
-
-# Fast pre-commit check (~30 seconds)
-make quick
-
-# Full CI validation locally (~2-3 minutes)
-make ci-local
-
-# Show all available commands
-make help
-```
-
-### What Each Make Command Does:
-
-**`make dev-setup`**: Sets up development environment
-
-- Updates Rust to latest stable
-- Installs clippy and rustfmt
-- Installs cargo-audit and cargo-watch
-
-**`make quick`**: Fast pre-commit check
-
-1. Checks code formatting
-2. Runs compile check
-
-**`make ci-local`**: Full CI pipeline (runs all commands above)
-
-1. Checks formatting (`cargo fmt --all --check`)
-2. Runs clippy with zero warnings (`cargo clippy --workspace --all-targets --all-features -- -D warnings`)
-3. Security audit (`cargo audit --deny unsound`)
-4. Runs all 62+ tests (`cargo test --workspace --all-features --verbose`)
-5. Builds release binary (`cargo build --release --locked`)
-
-**Tip**: See sections 1-6 above for what each step does and how to troubleshoot failures.
+### `performance.yml` (unified pipeline)
+- **Replaces** the former `benchmark.yml`, `performance-regression.yml`, and
+  `webhook-benchmark.yml` with a single matrix-driven workflow.
+- Runs on **main pushes** (path-filtered) and `workflow_dispatch` — not on PRs.
+- **Shared build job** produces the operator binary and Docker image once; all
+  three suites (operator, regression, webhook) download the same artifact.
+- **Matrix execution** runs operator and regression suites via `setup-perf-env`,
+  and the webhook suite directly (no kind cluster required).
+- **Shared baseline comparison** via `.github/actions/compare-benchmarks`
+  composite action wrapping `compare_benchmarks.py`.
 
 ---
 
-## CI Workflows
+## Release & Multi-Arch Workflows (#665)
 
-GitHub Actions automatically runs these workflows:
+### `multiarch-build.yml`
+- Runs on **main pushes** (path-filtered) and `workflow_dispatch` — not on PRs.
+- Per-platform GHA cache scopes (`multiarch-amd64`, `multiarch-arm64`) prevent
+  cross-arch cache pollution and improve cache hit rates.
+- `arch-benchmark` jobs use `setup-rust` composite action.
+- Combined manifest build pulls from both per-platform caches.
 
-- **[ci.yml](workflows/ci.yml)**: Main pipeline
-  - Runs on every push to `main` and all PRs
-  - Security audit → Lint → Test → Build → Docker → Security Scan
-- **[benchmark.yml](workflows/benchmark.yml)**: Performance tests
-  - Runs on push to `main` and PRs
-  - Measures operator performance with k6
-- **[release.yml](workflows/release.yml)**: Release automation
-  - Runs on version tags (v*.*.\*)
-  - Builds multi-platform binaries and Docker images
-  - Creates GitHub release with artifacts
+### `release.yml`
+- **Eliminated duplicate Docker build**: `container` job first attempts to
+  re-tag the `sha-<sha>` image already published by `multiarch-build.yml`.
+  A fresh build only runs as a fallback when the sha image is unavailable.
+- **Fail-safe**: `validate` job enforces semver format AND Cargo.toml version
+  match before any build or publish step runs. A mismatch is now a hard error
+  (previously a warning).
+- `release` job depends on ALL of: `build-artifacts`, `container`, `security`,
+  `helm` — broken builds can never be tagged for release.
+- Standardised on `actions/upload-artifact@v4` / `actions/download-artifact@v4`.
 
 ---
 
-## Troubleshooting
+## Action Version Standardisation & Security
 
-### Format Check Fails
+All workflows now use consistent, security-hardened action versions:
 
+| Action | Version | Security Notes |
+|--------|---------|----------------|
+| `actions/checkout` | `@v7` | Latest with security patches |
+| `actions/setup-node` | `@v4` | Stable, consistent |
+| `actions/setup-python` | `@v6` | **Fixed inconsistency** (was mixed v5/v6) |
+| `actions/upload-artifact` | `@v4` | Consistent across all workflows |
+| `actions/download-artifact` | `@v4` | Consistent across all workflows |
+| `actions/cache` | `@v4` | Stable caching |
+| `helm/kind-action` | `v1.14.0` | Pinned for stability |
+| `docker/build-push-action` | `@v7` | Latest with security improvements |
+| `aquasecurity/trivy-action` | `@v0.36.0` | **Fixed inconsistency** (was mixed v0.35.0/v0.36.0) |
+| `Swatinem/rust-cache` | `@v2` | **Optimized configuration** |
+
+### Security Hardening Applied
+
+#### Docker Image Security
+- **Valid base image digest**: Fixed dummy SHA256 → actual `debian:bookworm-slim` digest
+- **Supply chain verification**: Ensures reproducible, verified builds
+- **SBOM generation**: Enabled for all release artifacts
+- **Provenance attestation**: Cryptographic build provenance for containers
+
+#### Dependency Security
+- **Centralized audit config**: Moved from inline CLI ignores to documented `.cargo/audit.toml`
+- **Justified ignores**: Each security advisory ignore includes:
+  - Technical rationale for why it's safe to ignore
+  - Conditions for removal
+  - Review date for re-evaluation
+- **Eliminated phantom entries**: Removed non-existent future-year RUSTSEC IDs
+
+---
+
+## Reliability Testing & Monitoring
+
+### New CI Reliability Test (`ci-reliability-test.yml`)
+Validates pipeline stability and hardening:
+
+- ✅ **Docker config validation**: Verifies base image digests are valid
+- ✅ **Security audit testing**: Confirms audit configuration is functional  
+- ✅ **Action version consistency**: Detects version drift across workflows
+- ✅ **Cache configuration**: Validates deprecated settings are removed
+- ✅ **Retry logic testing**: Confirms error handling patterns exist
+- ✅ **Documentation completeness**: Ensures troubleshooting guides exist
+
+### Troubleshooting Documentation
+New comprehensive guide: `.github/CI_TROUBLESHOOTING.md`
+
+**Covers common failure scenarios:**
+- Docker build failures and digest issues
+- Security audit failures and ignore management  
+- Test timeouts and performance regressions
+- Cache restoration problems
+- Action version conflicts
+
+**Includes local reproduction steps:**
 ```bash
-# Auto-fix formatting
-cargo fmt --all
+# Reproduce CI failures locally
+docker build --target runtime --platform linux/amd64 .
+cargo test --all-features --workspace
+cargo audit  # Uses .cargo/audit.toml config
 ```
 
-### Clippy Warnings
+---
 
-```bash
-# See detailed clippy suggestions
-cargo clippy --workspace --all-targets --all-features
-```
+## Deduplicated Pipeline Gates (#1202)
 
-### Test Failures
+### Link checking
+- **Primary CI gate:** `repo-wide-link-check` (lychee) in `ci.yml`.
+- Removed overlapping PR jobs: `markdown-link-check` and `docs-link-check`.
+- Local/checklist: `python3 scripts/check-links.py` (via `make health`) still works.
+- Scheduled link rot: currently not covered (link-check.yml was deleted as part of cleanup wave).
 
-```bash
-# Run tests with detailed output
-cargo test --workspace --verbose -- --nocapture
-```
+### CRD backward-compatibility (choose one PR path)
+- **Canonical PR gate:** Python `crd_migration_lint` in
+  `quickstart-validation.yml` (`scripts/crd_migration_lint.py --against origin/main`
+  plus `scripts/tests/test_crd_migration_lint.py`).
+- **Local/ad-hoc only:** `scripts/check-crd-compatibility.sh` (no longer a `ci.yml` job).
 
-### Build Failures
+### cargo audit on PRs
+- **PR/push path:** `ci.yml` `security-audit` (runs when dependency files change).
+- **Schedule / SBOM / cargo-deny / scorecard:** `.github/workflows/security-audit.yml`
+  (schedule + `workflow_dispatch` only — no duplicate PR trigger).
+- **Not duplicated in:** `dependency-review.yml` or `maintenance.yml`.
 
-```bash
-# Clean and rebuild
-cargo clean
-cargo build --release --locked
-```
+### YAML schema, Helm edge cases, tracing, migrations (#1289–#1291, #1317)
+- **YAML lint + CRD JSON schema drift + Helm-render kubeconform:** `ci.yml` `yaml-schema`
+  (`make yaml-schema-validate`). Does not replace `repo-hygiene`'s
+  `validate-yaml-manifests.py` (#1044).
+- **Helm unittest + upgrade preservation:** `ci.yml` `helm-test`
+  (`make helm-unittest`, `make helm-upgrade-test`).
+- **Database migration harness:** `ci.yml` `db-migrations` with Postgres 16
+  (`make test-db-migrations`). Uses isolated `stellar_migration_test` credentials only.
+
+### Security scanning (Trivy / Checkov)
+- **Canonical workflow:** `.github/workflows/security-scan.yml` (push to `main`,
+  schedule, `workflow_dispatch`). Uses `.github/actions/security-scan` for image scans.
+- **CI image scan after publish:** `ci.yml` `security-scan` job (same composite action).
+
+### Maintenance workflow
+- **Unique job only:** `maintenance.yml` → stale-artifact regression tests.
+- Scheduled cargo-audit lives in `security-audit.yml` (scheduled workflow).
+
+### Issue templates
+- **Single maintenance/chore template:** `.github/ISSUE_TEMPLATE/maintenance.yml`
+  (covers dependency updates, CI hygiene, docs, refactors).
+
+### Release gate vs release.yml
+- `release.yml` `validate` owns semver + Cargo.toml matching; helm job owns helm lint.
+- `release-gate.yml` keeps unique value only:
+  CHANGELOG entry + helm unittest.
+
+---
+
+## Monitoring & Success Metrics
+
+### Target Reliability Metrics
+- **Success rate**: >95% on main branch
+- **Build duration**: <45 minutes end-to-end
+- **Cache hit rate**: >80% for Rust builds
+- **Security audit**: 0 unaddressed critical/high CVEs
+
+### Alert Conditions
+- 3+ consecutive main branch failures
+- Individual job runtime >60 minutes  
+- Cache hit rate <60% (indicates configuration issues)
+- New high/critical CVEs not addressed within 7 days

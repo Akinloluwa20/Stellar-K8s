@@ -1,3 +1,15 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 //! Zero-downtime ledger snapshots via CSI VolumeSnapshots
 //!
 //! When a StellarNode (Validator) has `snapshotSchedule` configured, the operator
@@ -17,9 +29,17 @@ use crate::controller::resource_meta::merge_resource_meta;
 use crate::controller::resources::{
     owner_reference, resource_name, standard_labels as node_standard_labels,
 };
-use crate::crd::{SnapshotScheduleConfig, StellarNode};
+use crate::crd::{BackupConfig, SnapshotScheduleConfig, StellarNode};
 use crate::error::{Error, Result};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+
+/// Readiness state for a CSI VolumeSnapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VolumeSnapshotReadiness {
+    Ready,
+    Pending,
+    Failed(String),
+}
 
 const REQUEST_SNAPSHOT_ANNOTATION: &str = "stellar.org/request-snapshot";
 const LAST_SNAPSHOT_AT_ANNOTATION: &str = "stellar.org/last-snapshot-at";
@@ -76,7 +96,15 @@ pub async fn reconcile_snapshot(
         name,
         chrono::Utc::now().format("%Y%m%d-%H%M%S")
     );
-    create_volume_snapshot(client, node, &snapshot_name, &pvc_name, config).await?;
+    create_volume_snapshot_with_options(
+        client,
+        node,
+        &snapshot_name,
+        &pvc_name,
+        config.volume_snapshot_class_name.as_deref(),
+        config.encryption_key_ref.as_deref(),
+    )
+    .await?;
 
     // Enforce retention: list snapshots for this node and delete oldest if over limit
     if config.retention_count > 0 {
@@ -133,6 +161,61 @@ async fn verify_snapshot_encryption(
     }
 }
 
+/// Create a pre-upgrade VolumeSnapshot targeting the node's data PVC.
+pub async fn create_pre_upgrade_snapshot(
+    client: &Client,
+    node: &StellarNode,
+    snapshot_name: &str,
+    config: &BackupConfig,
+) -> Result<()> {
+    let pvc_name = resource_name(node, "data");
+    create_volume_snapshot_with_options(
+        client,
+        node,
+        snapshot_name,
+        &pvc_name,
+        config.volume_snapshot_class_name.as_deref(),
+        config.encryption_key_ref.as_deref(),
+    )
+    .await
+}
+
+/// Inspect a VolumeSnapshot's readiness.
+pub async fn get_volume_snapshot_readiness(
+    client: &Client,
+    node: &StellarNode,
+    snapshot_name: &str,
+) -> Result<VolumeSnapshotReadiness> {
+    let namespace = node.namespace().unwrap_or_else(|| "default".to_string());
+    let api_resource = volume_snapshot_api_resource();
+    let api: Api<DynamicObject> = Api::namespaced_with(client.clone(), &namespace, &api_resource);
+
+    match api.get(snapshot_name).await {
+        Ok(snapshot) => {
+            let status = snapshot.data.get("status").and_then(|s| s.as_object());
+            if let Some(message) = status
+                .and_then(|s| s.get("error").or_else(|| s.get("message")))
+                .and_then(|v| v.as_str())
+            {
+                return Ok(VolumeSnapshotReadiness::Failed(message.to_string()));
+            }
+
+            let ready = status
+                .and_then(|s| s.get("readyToUse"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            if ready {
+                Ok(VolumeSnapshotReadiness::Ready)
+            } else {
+                Ok(VolumeSnapshotReadiness::Pending)
+            }
+        }
+        Err(kube::Error::Api(e)) if e.code == 404 => Ok(VolumeSnapshotReadiness::Pending),
+        Err(e) => Err(Error::KubeError(e)),
+    }
+}
+
 /// Returns true if the cron schedule has fired (next run time is in the past or within 1 minute of now).
 fn schedule_matches_now(config: &SnapshotScheduleConfig, node: &StellarNode) -> bool {
     let schedule = match &config.schedule {
@@ -161,7 +244,7 @@ fn schedule_matches_now(config: &SnapshotScheduleConfig, node: &StellarNode) -> 
 
 /// Request a graceful flush of the Stellar database (if supported).
 /// Stellar Core uses SQLite; we could exec into the pod and run PRAGMA checkpoint, or call an HTTP endpoint if available.
-fn request_db_flush(_client: &Client, _node: &StellarNode) -> Result<()> {
+pub fn request_db_flush(_client: &Client, _node: &StellarNode) -> Result<()> {
     // Optional: exec into the pod and run sqlite3 checkpoint, or call stellar-core HTTP.
     // For now we no-op; storage drivers that support consistent snapshots (e.g. CSI with volume snapshot)
     // may not require application flush. Document in user docs.
@@ -169,12 +252,13 @@ fn request_db_flush(_client: &Client, _node: &StellarNode) -> Result<()> {
 }
 
 /// Create a VolumeSnapshot targeting the node's data PVC.
-async fn create_volume_snapshot(
+async fn create_volume_snapshot_with_options(
     client: &Client,
     node: &StellarNode,
     snapshot_name: &str,
     pvc_name: &str,
-    config: &SnapshotScheduleConfig,
+    volume_snapshot_class_name: Option<&str>,
+    encryption_key_ref: Option<&str>,
 ) -> Result<()> {
     let namespace = node.namespace().unwrap_or_else(|| "default".to_string());
     let api_resource = volume_snapshot_api_resource();
@@ -196,8 +280,8 @@ async fn create_volume_snapshot(
         "source": {
             "persistentVolumeClaimName": pvc_name
         },
-        "volumeSnapshotClassName": config.volume_snapshot_class_name,
-        "parameters": config.encryption_key_ref.as_ref().map(|key| {
+        "volumeSnapshotClassName": volume_snapshot_class_name,
+        "parameters": encryption_key_ref.map(|key| {
             serde_json::json!({
                 "encryptionKeyRef": key
             })

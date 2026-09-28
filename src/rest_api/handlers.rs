@@ -1,9 +1,21 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 //! HTTP handlers for the REST API
 
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
     Json,
 };
@@ -11,11 +23,12 @@ use chrono::{Duration, Utc};
 use kube::{api::Api, ResourceExt};
 use tracing::{error, instrument};
 
-use crate::controller::ControllerState;
+use crate::controller::{AdminAction, AuditEntry, ControllerState};
 use crate::crd::StellarNode;
+use crate::rest_api::auth::RequestIdentity;
 
 use super::dto::{
-    ErrorResponse, HealthResponse, LeaderResponse, LogLevelRequest, LogLevelResponse,
+    ApiErrorCode, ErrorResponse, HealthResponse, LeaderResponse, LogLevelRequest, LogLevelResponse,
     NodeDetailResponse, NodeListResponse, NodeSummary, ProbeResponse,
 };
 
@@ -91,7 +104,11 @@ pub async fn list_nodes(
             error!("Failed to list nodes: {:?}", e);
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new("list_failed", &e.to_string())),
+                Json(ErrorResponse::structured(
+                    ApiErrorCode::ErrInternalServerError,
+                    &format!("Failed to list nodes: {e}"),
+                    None,
+                )),
             ))
         }
     }
@@ -120,16 +137,21 @@ pub async fn get_node(
         }
         Err(kube::Error::Api(e)) if e.code == 404 => Err((
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse::new(
-                "not_found",
+            Json(ErrorResponse::structured(
+                ApiErrorCode::ErrNotFound,
                 &format!("Node {namespace}/{name} not found"),
+                None,
             )),
         )),
         Err(e) => {
             error!("Failed to get node {}/{}: {:?}", namespace, name, e);
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new("get_failed", &e.to_string())),
+                Json(ErrorResponse::structured(
+                    ApiErrorCode::ErrInternalServerError,
+                    &format!("Failed to get node {namespace}/{name}: {e}"),
+                    None,
+                )),
             ))
         }
     }
@@ -139,6 +161,7 @@ pub async fn get_node(
 #[instrument(skip(state), fields(node_name = "-", namespace = %state.operator_namespace, reconcile_id = "-"))]
 pub async fn set_log_level(
     State(state): State<Arc<ControllerState>>,
+    Extension(identity): Extension<RequestIdentity>,
     Json(req): Json<LogLevelRequest>,
 ) -> Result<Json<LogLevelResponse>, (StatusCode, Json<ErrorResponse>)> {
     let filter = match req.level.parse::<tracing_subscriber::EnvFilter>() {
@@ -146,7 +169,11 @@ pub async fn set_log_level(
         Err(e) => {
             return Err((
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse::new("invalid_level", &e.to_string())),
+                Json(ErrorResponse::structured(
+                    ApiErrorCode::ErrBadRequest,
+                    &format!("Invalid log level: {e}"),
+                    None,
+                )),
             ));
         }
     };
@@ -155,9 +182,30 @@ pub async fn set_log_level(
         error!("Failed to reload log filter: {:?}", e);
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse::new("reload_failed", &e.to_string())),
+            Json(ErrorResponse::structured(
+                ApiErrorCode::ErrInternalServerError,
+                &format!("Failed to reload log filter: {e}"),
+                None,
+            )),
         ));
     }
+
+    state
+        .audit_recorder
+        .record(
+            AuditEntry::new(
+                AdminAction::SetLogLevel,
+                identity.subject.clone(),
+                "operator",
+                state.operator_namespace.clone(),
+                Some(&format!("{{\"level\":\"{}\"}}", req.level)),
+            )
+            .with_metadata(serde_json::json!({
+                "authType": identity.auth_type,
+                "groups": identity.groups,
+            })),
+        )
+        .await;
 
     let mut expires_at = None;
     if let Some(mins) = req.duration_minutes {
@@ -225,7 +273,7 @@ pub async fn healthz() -> Json<ProbeResponse> {
 }
 
 /// /readyz - deep health check verifying K8s API connectivity, watch stream health,
-/// and that the first reconciliation cycle has completed.
+/// and that the first reconciliation cycle has completed when work exists.
 pub async fn readyz(
     State(state): State<Arc<ControllerState>>,
 ) -> (StatusCode, Json<ProbeResponse>) {
@@ -238,22 +286,26 @@ pub async fn readyz(
 
     // 1. Basic K8s API connectivity & CRD presence
     let api: Api<StellarNode> = Api::all(state.client.clone());
-    if let Err(e) = api.list(&Default::default()).await {
-        crate::controller::metrics::set_ready_status(false);
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ProbeResponse {
-                status: "not ready",
-                reason: Some(format!("K8s API/CRD check failed: {e}")),
-            }),
-        );
-    }
+    let listed = match api.list(&Default::default()).await {
+        Ok(list) => list,
+        Err(e) => {
+            crate::controller::metrics::set_ready_status(false);
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ProbeResponse {
+                    status: "not ready",
+                    reason: Some(format!("K8s API/CRD check failed: {e}")),
+                }),
+            );
+        }
+    };
 
-    // 2. Reconciliation progress: Ensure at least one success
+    // 2. Reconciliation progress: require a successful reconcile only when there
+    // is at least one StellarNode to manage. An empty cluster is ready to accept work.
     let last_success = state
         .last_reconcile_success
         .load(std::sync::atomic::Ordering::Relaxed);
-    if last_success == 0 {
+    if last_success == 0 && !listed.items.is_empty() {
         crate::controller::metrics::set_ready_status(false);
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -367,9 +419,10 @@ pub async fn compliance_report(
             error!("Failed to generate compliance report: {}", e);
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(
-                    "compliance_report_error",
+                Json(ErrorResponse::structured(
+                    ApiErrorCode::ErrInternalServerError,
                     &format!("Failed to generate compliance report: {e}"),
+                    None,
                 )),
             ))
         }

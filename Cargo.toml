@@ -31,7 +31,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 
 # Schema generation for CRDs
-schemars = "0.8"
+schemars = { version = "0.8", features = ["chrono"] }
 
 # Error handling
 thiserror = "1"
@@ -45,12 +45,13 @@ clap_complete = "4.5"
 chrono = { version = "0.4", features = ["serde"] }
 # Pinned to fix RUSTSEC-2026-0009 (stack exhaustion DoS); also used transitively
 # by rcgen/yasna/x509-parser.
-time = { version = "0.3.47", optional = true }
+time = "0.3.47"
 # Pinned to fix RUSTSEC-2026-0007; used transitively by many HTTP/async crates.
-bytes = { version = "1.11.1", optional = true }
+bytes = "1.11.1"
 
 # Zip compression for incident reports
 zip = "2"
+tempfile = "3"
 
 # Hostname for leader election
 hostname = "0.4"
@@ -80,7 +81,11 @@ reqwest = { version = "0.12", features = [
 ] }
 
 # Kafka client for SCP analytics pipeline
-rdkafka = { version = "0.36", features = ["cmake-build", "ssl", "sasl"] }
+rdkafka = { version = "0.36", optional = true, features = [
+    "cmake-build",
+    "ssl",
+    "sasl",
+] }
 
 # REST API (optional)
 axum = { version = "0.8.8", optional = true, features = ["ws"] }
@@ -113,11 +118,16 @@ base64 = "0.21"
 
 # HMAC-SHA256 for webhook payload signing
 hmac = "0.12"
+http = "1"
+jsonwebtoken = "9"
+lru = "0.12"
 
 # SHA256 for plugin integrity verification
 sha2 = "0.10"
 hex = "0.4"
 rand = "0.8"
+# Keccak-256 for Merkle proof verification (issue #113)
+tiny-keccak = { version = "2.0", features = ["keccak"] }
 rand_distr = "0.5.1"
 
 # Backup scheduler dependencies
@@ -137,10 +147,14 @@ csv = "1.4.0"
 url = "2.5"
 urlencoding = "2.1"
 aws-sdk-s3 = "1.131.0"
+aws-sdk-secretsmanager = "1"
 aws-config = "1.8.16"
 serde_json_diff = "0.2.0"
 json-patch = "4.1.0"
 md5 = "0.8.0"
+# tar archive extraction for snapshot bootstrapping (#119)
+tar = "0.4"
+
 
 [build-dependencies]
 chrono = "0.4"
@@ -149,7 +163,7 @@ walkdir = "2"
 serde = { version = "1", features = ["derive"] }
 
 [features]
-default = ["rest-api", "metrics", "admission-webhook", "k8s-v1-30"]
+default = ["rest-api", "metrics", "admission-webhook", "k8s-v1-30", "kafka"]
 rest-api = ["axum", "tower", "tower-http"]
 metrics = ["prometheus-client", "once_cell"]
 admission-webhook = [
@@ -161,6 +175,9 @@ admission-webhook = [
     "tower-http",
 ]
 axum = ["dep:axum"]
+# Keep the SCP Kafka analytics pipeline enabled by default; tests can opt out
+# with `--no-default-features` in minimal build environments.
+kafka = ["rdkafka"]
 # Expose reconciler for state-machine fuzzing (reconcile_no_panic, event sequences)
 reconciler-fuzz = []
 
@@ -212,10 +229,3 @@ required-features = ["rest-api", "metrics"]
 
 [workspace]
 members = ["wasm-plugins"]
-
-[profile.release.package.stellar-wasm-cache]
-opt-level = "z"
-lto = true
-codegen-units = 1
-panic = "abort"
-strip = true
