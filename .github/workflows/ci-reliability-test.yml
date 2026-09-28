@@ -29,27 +29,50 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Validate base image digest
+      - name: Validate base image digests
         run: |
-          # Extract the digest from Dockerfile (strip optional "AS <stage>" suffix)
-          DIGEST=$(grep -E "FROM debian:bookworm-slim@sha256:" Dockerfile | sed -E 's/.*@(sha256:[a-fA-F0-9]{64}).*/\1/')
-          echo "Found digest: $DIGEST"
-          
-          # Verify it's a valid SHA256 (64 hex characters)
-          if [[ ! "$DIGEST" =~ ^sha256:[a-fA-F0-9]{64}$ ]]; then
-            echo "❌ Invalid digest format: $DIGEST"
-            echo "Expected: sha256:[64 hex characters]"
+          set -euo pipefail
+
+          # Every external base image must be pinned by digest. Local stage
+          # references (chef, planner, scratch, runtime-base) contain no "/"
+          # and are filtered out; --platform flags are stripped first.
+          mapfile -t BASES < <(
+            grep -E '^FROM ' Dockerfile \
+              | sed -E 's/^FROM[[:space:]]+//; s/[[:space:]]+AS[[:space:]]+.*$//; s/^--[^[:space:]]+[[:space:]]+//' \
+              | grep '/' | sort -u
+          )
+
+          if [ "${#BASES[@]}" -eq 0 ]; then
+            echo "❌ No external base images found in Dockerfile"
             exit 1
           fi
-          
-          # Verify the digest exists (pull by digest)
-          echo "🔍 Verifying digest exists on registry..."
-          if ! docker pull debian:bookworm-slim@$DIGEST; then
-            echo "❌ Digest not found on registry: $DIGEST"
+
+          FAILED=0
+          for ref in "${BASES[@]}"; do
+            echo "→ ${ref}"
+
+            # A pinned reference looks like <image>@sha256:<64 hex chars>.
+            if [[ ! "${ref}" =~ @sha256:[a-fA-F0-9]{64}$ ]]; then
+              echo "  ❌ Not pinned by digest (expected <image>@sha256:<64 hex>)"
+              FAILED=1
+              continue
+            fi
+
+            # Confirm the digest still resolves on its registry.
+            if docker buildx imagetools inspect "${ref}" >/dev/null 2>&1; then
+              echo "  ✅ digest resolves on registry"
+            else
+              echo "  ❌ digest could not be resolved on its registry"
+              FAILED=1
+            fi
+          done
+
+          if [ "${FAILED}" -ne 0 ]; then
+            echo "❌ Base image digest validation failed"
             exit 1
           fi
-          
-          echo "✅ Docker base image digest is valid"
+
+          echo "✅ All base images are digest-pinned and resolvable"
 
       - name: Test Docker build
         run: |

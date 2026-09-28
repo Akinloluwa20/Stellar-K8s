@@ -3,7 +3,7 @@
 # Stage 1: Chef - Dependency Caching Layer
 # Multi-arch: supports linux/amd64 and linux/arm64 (Graviton, Apple Silicon)
 # ==============================================================================
-FROM --platform=$BUILDPLATFORM lukemathwalker/cargo-chef:latest-rust-1.93 AS chef
+FROM --platform=$BUILDPLATFORM lukemathwalker/cargo-chef:latest-rust-1.93@sha256:a5dba3bcdb078c5e7697bbbc89d0ff8f6685c9720f7248299849249baea94673 AS chef
 WORKDIR /app
 
 # ==============================================================================
@@ -93,9 +93,15 @@ COPY target/release/kubectl-stellar /kubectl-stellar
 COPY target/release/soroban-cache-proxy /soroban-cache-proxy
 
 # ==============================================================================
-# Stage 5: Runtime Local - Minimal image for local dev (no container recompile)
+# Stage 5: Runtime Base - Digest-pinned distroless base shared by both runtime
+# images. Pinning keeps builds reproducible; Dependabot refreshes the digest.
 # ==============================================================================
-FROM gcr.io/distroless/cc-debian12:nonroot AS runtime-local
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f AS runtime-base
+
+# ==============================================================================
+# Stage 6: Runtime Local - Minimal image for local dev (no container recompile)
+# ==============================================================================
+FROM runtime-base AS runtime-local
 
 # Labels for container registry
 LABEL org.opencontainers.image.source="https://github.com/stellar/stellar-k8s"
@@ -120,9 +126,9 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 ENTRYPOINT ["/stellar-operator"]
 
 # ==============================================================================
-# Stage 6: Runtime - Minimal distroless image (~15-20MB total)
+# Stage 7: Runtime - Minimal distroless image (~15-20MB total)
 # ==============================================================================
-FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
+FROM runtime-base AS runtime
 
 # Labels for container registry
 LABEL org.opencontainers.image.source="https://github.com/stellar/stellar-k8s"
