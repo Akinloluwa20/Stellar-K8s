@@ -1,4 +1,4 @@
-.PHONY: help build test fmt fmt-check lint clean docker-build install-crd apply-samples dev-setup ci-local benchmark benchmark-upgrade benchmark-webhook benchmark-webhook-health benchmark-webhook-compare benchmark-webhook-save benchmark-all benchmark-soroban-cache wasm-cache-build run-dev helm-lint crd-gen run-local compose-up compose-dev compose-down compose-logs quickstart
+.PHONY: help build test fmt fmt-check lint preflight clean docker-build install-crd apply-samples dev-setup ci-local benchmark benchmark-upgrade benchmark-webhook benchmark-webhook-health benchmark-webhook-compare benchmark-webhook-save benchmark-all benchmark-soroban-cache wasm-cache-build run-dev helm-lint crd-gen run-local compose-up compose-dev compose-down compose-logs quickstart
 
 # Default target
 .DEFAULT_GOAL := help
@@ -35,6 +35,10 @@ lint: ## Run clippy
 		-D clippy::suspicious \
 		-D clippy::perf \
 		-D clippy::style
+
+preflight: ## Verify required tools and pinned minimum versions (CI gate)
+	@echo "→ Running toolchain preflight gate..."
+	@bash scripts/preflight.sh
 
 audit: ## Security audit
 	@echo "→ Running security audit..."
