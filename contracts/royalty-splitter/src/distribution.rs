@@ -162,7 +162,9 @@ pub fn compute_allocation(
             .checked_mul(payee.shares as i128)
             .ok_or(SplitError::MathOverflow)?
             / scale;
-        distributed = distributed.checked_add(cut).ok_or(SplitError::MathOverflow)?;
+        distributed = distributed
+            .checked_add(cut)
+            .ok_or(SplitError::MathOverflow)?;
         allocations.push_back(Allocation {
             address: payee.address,
             amount: cut,

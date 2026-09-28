@@ -33,12 +33,11 @@
 
 pub mod distribution;
 
-use distribution::{
-    approvals_cover, compute_allocation, validate, Allocation, Payee, SplitConfig, SplitError,
-};
-use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, token, Address, Env, Vec,
-};
+use distribution::{approvals_cover, compute_allocation, validate};
+// Re-export the public data types at the crate root so callers and integration
+// tests can name them directly.
+pub use distribution::{Allocation, Payee, SplitConfig, SplitError};
+use soroban_sdk::{contract, contractevent, contractimpl, contracttype, token, Address, Env, Vec};
 
 /// Refresh instance-storage TTL once it drops below this many ledgers.
 const CONFIG_TTL_THRESHOLD: u32 = 100;
@@ -57,6 +56,37 @@ pub enum DataKey {
     PaymentsProcessed,
     /// Cumulative amount routed to payees, across all payments.
     TotalRouted,
+}
+
+/// Emitted once when the contract is configured.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Initialized {
+    /// Number of configured payees.
+    pub payees: u32,
+}
+
+/// Emitted after a payment, carrying the exact amount that was routed.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaymentProcessed {
+    /// Payer whose funds were collected.
+    #[topic]
+    pub from: Address,
+    /// Asset that was transferred.
+    pub asset: Address,
+    /// Gross amount collected.
+    pub amount: i128,
+    /// Total routed to payees (always equal to `amount`).
+    pub routed: i128,
+}
+
+/// Emitted when the split table changes.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SplitUpdated {
+    /// The newly active payee set.
+    pub payees: Vec<Payee>,
 }
 
 /// The royalty splitter contract.
@@ -84,6 +114,7 @@ impl RoyaltySplitter {
             payee.address.require_auth();
         }
 
+        let payee_count = payees.len();
         env.storage()
             .instance()
             .set(&DataKey::Config, &SplitConfig { payees });
@@ -94,7 +125,10 @@ impl RoyaltySplitter {
         env.storage().instance().set(&DataKey::TotalRouted, &0i128);
         bump_ttl(&env);
 
-        env.events().publish((symbol_short!("init"),), ());
+        Initialized {
+            payees: payee_count,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -155,8 +189,13 @@ impl RoyaltySplitter {
             .instance()
             .set(&DataKey::TotalRouted, &(total + routed));
 
-        env.events()
-            .publish((symbol_short!("payment"),), (from, asset, amount, routed));
+        PaymentProcessed {
+            from,
+            asset,
+            amount,
+            routed,
+        }
+        .publish(&env);
         bump_ttl(&env);
         Ok(())
     }
@@ -190,13 +229,15 @@ impl RoyaltySplitter {
 
         validate(&new_payees)?;
 
-        env.storage()
-            .instance()
-            .set(&DataKey::Config, &SplitConfig { payees: new_payees.clone() });
+        env.storage().instance().set(
+            &DataKey::Config,
+            &SplitConfig {
+                payees: new_payees.clone(),
+            },
+        );
         bump_ttl(&env);
 
-        env.events()
-            .publish((symbol_short!("split"),), new_payees);
+        SplitUpdated { payees: new_payees }.publish(&env);
         Ok(())
     }
 

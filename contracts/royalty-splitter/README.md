@@ -68,10 +68,16 @@ This crate is a standalone Cargo workspace so it does not affect the parent
 
 ```bash
 cd contracts/royalty-splitter
-cargo test                       # unit tests in src/ + tests/integration.rs
-cargo build --release \
-  --target wasm32-unknown-unknown  # produces target/.../royalty_splitter.wasm
+cargo test          # unit tests in src/ + tests/integration.rs
+
+# Build the deployable Wasm artifact. soroban-sdk 28 requires the
+# stellar-cli build pipeline (raw `cargo build --target wasm32-*` is rejected):
+stellar contract build   # requires stellar-cli v25.2.0+
 ```
+
+`Cargo.lock` is committed: `soroban-env-host` declares an open
+`ed25519-dalek = ">=2.0.0"` requirement, and without a lock the resolver can
+pick the API-incompatible 3.x line and fail to compile.
 
 The integration suite deploys a real Stellar Asset Contract
 (`register_stellar_asset_contract_v2`) and asserts, among other things, the

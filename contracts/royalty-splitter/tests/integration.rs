@@ -60,9 +60,9 @@ fn splits_10_000_tokens_without_dust() {
     let config = make_payees(
         &env,
         &[
-            (creator.clone(), 333_330),     // 33.333%
-            (platform.clone(), 333_330),    // 33.333%
-            (affiliate.clone(), 333_340),   // 33.334%
+            (creator.clone(), 333_330),   // 33.333%
+            (platform.clone(), 333_330),  // 33.333%
+            (affiliate.clone(), 333_340), // 33.334%
         ],
     );
     splitter.initialize(&config);
@@ -107,7 +107,9 @@ fn preview_matches_settlement_and_strands_no_dust() {
         Address::generate(&env),
     ];
     // 7 uneven shares summing to exactly 1_000_000.
-    let shares = [200_000u32, 150_000, 120_000, 110_000, 140_000, 130_000, 150_000];
+    let shares = [
+        200_000u32, 150_000, 120_000, 110_000, 140_000, 130_000, 150_000,
+    ];
     assert_eq!(shares.iter().sum::<u32>(), 1_000_000);
 
     let mut config = Vec::new(&env);
@@ -132,7 +134,10 @@ fn preview_matches_settlement_and_strands_no_dust() {
         assert_eq!(token.balance(&allocation.address), allocation.amount);
         settled += allocation.amount;
     }
-    assert_eq!(settled, amount, "preview allocations must sum to the payment");
+    assert_eq!(
+        settled, amount,
+        "preview allocations must sum to the payment"
+    );
     assert_eq!(token.balance(&contract_id), 0, "contract must hold no dust");
 }
 
@@ -148,7 +153,10 @@ fn reconfiguration_requires_unanimous_approval() {
     let d = Address::generate(&env);
 
     let (_contract_id, splitter) = deploy_splitter(&env);
-    splitter.initialize(&make_payees(&env, &[(a.clone(), 500_000), (b.clone(), 500_000)]));
+    splitter.initialize(&make_payees(
+        &env,
+        &[(a.clone(), 500_000), (b.clone(), 500_000)],
+    ));
 
     let new_config = make_payees(&env, &[(c.clone(), 600_000), (d.clone(), 400_000)]);
 
@@ -224,7 +232,10 @@ fn tracks_payment_counters() {
 
     let (token_id, asset, token) = deploy_token(&env);
     let (contract_id, splitter) = deploy_splitter(&env);
-    splitter.initialize(&make_payees(&env, &[(a.clone(), 500_000), (b.clone(), 500_000)]));
+    splitter.initialize(&make_payees(
+        &env,
+        &[(a.clone(), 500_000), (b.clone(), 500_000)],
+    ));
 
     assert_eq!(splitter.payments_processed(), 0);
     assert_eq!(splitter.total_routed(), 0);
