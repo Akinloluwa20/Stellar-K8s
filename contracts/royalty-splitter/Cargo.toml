@@ -1,0 +1,33 @@
+[package]
+name = "royalty-splitter"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Dust-free Soroban royalty splitter that routes payments to N payees"
+repository = "https://github.com/Akinloluwa20/Stellar-K8s"
+publish = false
+
+[lib]
+# `cdylib` produces the deployable Wasm artifact; `rlib` lets the
+# `tests/` integration suite link against the contract types.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = "22"
+
+[dev-dependencies]
+soroban-sdk = { version = "22", features = ["testutils"] }
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
+
+# Keep this contract out of the parent `stellar-k8s` workspace so the operator
+# build (and its dependency graph) is unaffected by contract-only crates.
+[workspace]
